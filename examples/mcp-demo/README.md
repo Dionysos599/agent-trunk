@@ -79,8 +79,8 @@ bin/agenttrunk --main demo export /tmp/demo-result && python3 examples/mcp-demo/
 * **A failing change never reaches main.** Ask one agent to break a test on purpose before submitting.
   `submit_task` answers `rejected` with the failing output; main does not move.
 * **Killing an agent.** Close one agent's terminal while it holds a task, then start `claude` again in the
-  same folder. The agent name is the same, so `claim_task` says "you already hold task X", your files are still
-  there, and `submit_task` lands them. Another agent can take the task over only after its claim has been
+  same folder. The agent name is the same, so `claim_task` hands you your task and folder back ("you already hold
+  this task"), your files are still there, and `submit_task` lands them. Another agent can take the task over only after its claim has been
   silent for `--claim-ttl` seconds (default 900).
 * **Giving a task back.** `release_task`, then another agent claims it.
 * **Honest paths.** `tasks.json` declares only each task's own two files, so tasks run at the same time and
@@ -90,6 +90,17 @@ bin/agenttrunk --main demo export /tmp/demo-result && python3 examples/mcp-demo/
 * **A client without a file system.** Add `"--file-tools"` to the `args` in `.mcp.json` (and drop `--workdir`):
   the agent then edits through `list_files`, `read_file`, `write_file` and `replace_in_file` instead of a
   folder.
+
+## With a local model instead of Claude Code
+
+```bash
+python3 examples/mcp-demo/llm_agent.py --name alice --board demo --main demo --model qwen2.5-coder:7b \
+    --llm-url http://127.0.0.1:11434/v1 --workdir ./work --log alice.jsonl
+```
+
+Run several (different `--name`) at once; `alice.jsonl` records every tool call. To watch a `rejected`, pass
+`--validate-cmd "python3 examples/mcp-demo/strict_check.py"`: the check requires type annotations, which the task text
+does not mention.
 
 ## Files
 
@@ -101,4 +112,6 @@ bin/agenttrunk --main demo export /tmp/demo-result && python3 examples/mcp-demo/
 | `setup.sh` | project + board + one MCP configuration per agent |
 | `simulate.py` | scripted agents over real MCP processes, for trying it without a model |
 | `check.py` | verifies a finished result |
+| `llm_agent.py` | an MCP client driven by any OpenAI-compatible model (a local Ollama), to try the flow without Claude Code |
+| `strict_check.py` | a validation command with a rule the task text never mentions (type annotations), to watch an agent handle `rejected` |
 | `solutions.py` | the reference solutions behind `simulate.py` (the real agents never see it) |

@@ -159,6 +159,8 @@ class TrunkService:
         with self._lock:
             held = self._active()
             if held is not None:
+                if (task is None or task == held["task"]) and not description:
+                    return self._resume(held)                     # asking again for what you hold: hand it back
                 raise TrunkError(f"you already hold task {held['task']!r}. submit_task it or release_task it first.")
             if description:
                 task = self._add_adhoc(task, description, paths or [])
@@ -221,34 +223,49 @@ class TrunkService:
                 raise TrunkError(f"a task {tid!r} is already on the board.")
         raise TrunkError("could not add the task; try again.")
 
-    def _start(self, t: Task, epoch: int) -> dict:
-        branch = t.id
+    def _prepare(self, branch: str) -> Optional[str]:
+        """Make sure the branch and its folder (or session) exist; return the folder, None in memory mode."""
         try:
             self.repo.resume(branch)
         except NoSuchWorkspace:
             self.repo.fork(branch)
-        folder: Optional[str] = None
         if self.file_tools:
-            self._sessions[branch] = Session.open(self.repo, branch)
+            if branch not in self._sessions:
+                self._sessions[branch] = Session.open(self.repo, branch)
+            return None
+        root = self.workdir / branch
+        if root.exists() and any(root.iterdir()):
+            Checkout.open(self.repo, root).pull()
         else:
-            root = self.workdir / branch
-            if (root).exists() and any(root.iterdir()):
-                co = Checkout.open(self.repo, root)
-                co.pull()
-            else:
-                co = Checkout.clone(self.repo, branch, root)
-            folder = str(root.resolve())
-        kvdoc.update(self.repo.kv, self._active_key, lambda d: (d.clear(), d.update(
-            task=t.id[len(self.board) + 1:], full=t.id, epoch=epoch, mode="memory" if self.file_tools else "folder",
-            folder=folder, since=self.clock())), {})
+            Checkout.clone(self.repo, branch, root)
+        return str(root.resolve())
+
+    def _describe(self, t: Task, folder: Optional[str], resumed: bool = False) -> dict:
         cut = len(self.board) + 1
         where = (f"Edit the files in {folder} with your normal tools." if folder else
                  "Use list_files, read_file, write_file and replace_in_file; every call may carry a seq number.")
-        return {"ok": True, "task": {"id": t.id[cut:], "description": t.description, "paths": list(t.paths),
-                                     "prompt": task_prompt(Task(t.id, t.description, t.paths, t.context))},
-                "branch": f"ws/{branch}", "folder": folder, "main": _short(self.repo.head()),
-                "next": f"{where} Stay inside the declared paths. When done call submit_task; if it says main moved, "
-                        "call sync_with_main, check the result, then submit_task again."}
+        lead = "You already hold this task; here it is again. " if resumed else ""
+        out = {"ok": True, "task": {"id": t.id[cut:], "description": t.description, "paths": list(t.paths),
+                                    "prompt": task_prompt(Task(t.id, t.description, t.paths, t.context))},
+               "branch": f"ws/{t.id}", "folder": folder, "main": _short(self.repo.head()),
+               "next": f"{lead}{where} Stay inside the declared paths. When done call submit_task; if it says main moved, "
+                       "call sync_with_main, check the result, then submit_task."}
+        if resumed:
+            out["resumed"] = True
+        return out
+
+    def _start(self, t: Task, epoch: int) -> dict:
+        folder = self._prepare(t.id)
+        kvdoc.update(self.repo.kv, self._active_key, lambda d: (d.clear(), d.update(
+            task=t.id[len(self.board) + 1:], full=t.id, epoch=epoch, mode="memory" if self.file_tools else "folder",
+            folder=folder, since=self.clock())), {})
+        return self._describe(t, folder)
+
+    def _resume(self, held: dict) -> dict:
+        t = self._graph().by_id.get(held["full"])
+        if t is None:
+            raise TrunkError(f"your task {held['task']!r} is no longer on the board; release_task it.")
+        return self._describe(t, self._prepare(held["full"]), resumed=True)
 
     def release(self, reason: str = "") -> dict:
         with self._lock:

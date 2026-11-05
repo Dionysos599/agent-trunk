@@ -142,7 +142,7 @@ def agent(name, url, main, board, workdir, validate, log, results, crash):
                 cl.kill()
                 cl = make()                                  # a new process, the same agent name
                 err, again = cl.tool("claim_task")
-                log(f"{name}: after the restart claim_task says: {again.get('error', again)!s:.70}")
+                log(f"{name}: after the restart claim_task says: ok={again.get('ok')} resumed={again.get('resumed')} {again.get('error', '')}")
                 err, st = cl.tool("task_status")
                 log(f"{name}: after the restart the folder still has {sorted(st.get('uncommitted', {}))} "
                     f"and the claim is {'held' if st.get('claim_held') else 'LOST'}")

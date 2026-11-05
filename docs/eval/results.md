@@ -226,6 +226,30 @@ queue now guards the three ways found so far in which work can disappear without
 resolution that drops a side, an unrecorded read, an empty "done"); a task-level acceptance check supplied
 with each task would be the general answer and is the obvious next step.
 
+## Real agents through the MCP server (one run)
+
+The ten-task demo of `examples/mcp-demo` (ten modules, each with tests, and every task appending a line to the two
+shared files `registry.py` and `CHANGELOG.md`) was run with **three real Claude Code sessions** as the agents
+(alice, bob, carol), each connected to the board through `agenttrunk mcp` and given only the short instruction in the
+demo's README. The tools' `next` hints were the only other guidance.
+
+| | |
+|---|---|
+| tasks done | 10 of 10 (alice 4, bob 3, carol 3: no task claimed twice, nobody idle) |
+| collisions | 7 times a submit found `main` moved and a sync returned the shared files with conflict markers (validators 3, shipping 3, tax 1) |
+| how they ended | every conflict was resolved by the agent keeping both sides' lines; every task then landed with one clean commit |
+| history of `main` | a single line, no forks |
+| result check (`check.py` on the exported `main`) | 24 files; 10/10 modules written; 10/10 features listed exactly once in each shared file; 43 tests, all passing; `ALL DONE` |
+
+What this shows: real agents can use the workflow tools as designed, collide on shared files, recover from the
+markers, and leave nothing lost. The agents wrote more tests (43) than the scripted reference agents (36), so they
+took the "at least three tests" instruction seriously.
+
+What it does not show: it is **one run**, with no timing or token record, on a task whose collisions are the easy
+kind (appended lines). Killing a real agent and restarting it, and a real agent reacting to a `rejected` result, were
+not tried with real clients (the scripted chaos mode and the tests cover both). The earlier mixed experiment above
+remains the evidence about silent losses; this one is evidence that the interface works for a real client.
+
 ## Fault injection on the real replicated store (E4)
 
 `shared` suite, fork + merge queue, 5 tasks, perfect agents (so only the faults can cause loss), on the
@@ -249,11 +273,17 @@ resumes the same run (claim lifetime 3 s).
 
 ## What is not covered
 
-* The mixed experiment used one local model and one command-line agent, 3 runs per cell, on two suites. It
-  was run from a terminal because the `claude` command refuses to start inside another Claude Code session.
-* Only one small model; no repository-scale tasks; the suites are synthetic by design so that every
-  outcome has an exact oracle. Real tasks (for example a SWE-bench subset) are future work.
+* The real-agent run through MCP is a single run (see above). Killing a real agent and restarting it, and a real
+  agent facing a `rejected` result, have not been tried with a real client.
+* The mixed experiment used one local model and one command-line agent, 3 runs per cell, on two suites. It was run
+  from a terminal because the `claude` command refuses to start inside another Claude Code session.
+* Only one small local model; no repository-scale tasks; the suites are synthetic by design so that every outcome has
+  an exact oracle. Real tasks (for example a SWE-bench subset, or concurrent pull requests replayed from a real
+  repository's history) are future work, see `docs/design/12-update-consistency-and-efficiency.md`.
 * Token counts for the command-line agent are not available.
+* Git branches with pull requests and a merge queue were not run as a separate strategy. The nearest thing recorded
+  here is the fork + merge queue with unrecorded reads (three-way merge plus validation, no read set), which loses the
+  same updates a plain git workflow would.
 
 ## Reproduce
 

@@ -256,10 +256,15 @@ class BoardTests(unittest.TestCase):
         self.assertIn("is claimed (by alice)", str(cm.exception))
 
     def test_one_task_at_a_time(self):
-        self.a.claim()
-        with self.assertRaises(TrunkError) as cm:
-            self.a.claim()
-        self.assertIn("already hold task 'inc1'", str(cm.exception))
+        first = self.a.claim()
+        again = self.a.claim()                                                  # asking again hands the same task back
+        self.assertEqual((again["task"]["id"], again["resumed"], again["folder"]), ("inc1", True, first["folder"]))
+        self.assertIn("You already hold this task", again["next"])
+        self.assertEqual(self.a.claim("inc1")["resumed"], True)                 # naming it is the same thing
+        for kwargs in ({"task": "lib"}, {"description": "another", "paths": ["z.py"]}):
+            with self.assertRaises(TrunkError) as cm:                           # asking for something else is refused
+                self.a.claim(**kwargs)
+            self.assertIn("already hold task 'inc1'", str(cm.exception))
 
     def test_a_task_you_add_yourself(self):
         b = self.env.svc("bob")
@@ -466,8 +471,10 @@ class WorkTests(unittest.TestCase):
         write(c, "stats.py", "COUNT = 1\n")
         again = self.env.svc("alice")                                # a new process for the same agent
         self.assertEqual(again.status()["uncommitted"], {"stats.py": "M"})   # the edit is in the folder, read back by the new server
+        back = again.claim()                                         # the restarted agent is handed its task and folder
+        self.assertEqual((back["task"]["id"], back["resumed"], back["folder"]), ("t1", True, c["folder"]))
         with self.assertRaises(TrunkError) as cm:
-            again.claim()
+            again.claim("t2")
         self.assertIn("already hold task 't1'", str(cm.exception))
         self.assertEqual(again.submit()["status"], "landed")         # the folder has the edit, the store has the claim
         self.assertEqual(self.main(), "COUNT = 1\n")
@@ -515,6 +522,24 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(self.a.read_main("stats.py"), "COUNT = 0\n")
         with self.assertRaises(TrunkError):
             self.a.read_main("nope.py")
+
+    def test_a_resumed_task_whose_folder_was_deleted_is_checked_out_again(self):
+        import shutil
+        c = self.a.claim("t1")
+        self.a.release()
+        self.a.claim("t1")
+        shutil.rmtree(c["folder"])
+        back = self.a.claim()
+        self.assertTrue(back["resumed"])
+        self.assertTrue((Path(back["folder"]) / "stats.py").exists())
+
+    def test_resuming_a_task_that_left_the_board_says_so(self):
+        c = self.a.claim("t1")
+        self.a.repo.kv.put("runs/b1/plan", json.dumps({"goal": None, "created": 0, "tasks": [
+            {"id": "t2", "description": "y", "paths": ["2.m"], "context": "", "depends_on": []}]}))
+        with self.assertRaises(TrunkError) as cm:
+            self.a.claim()
+        self.assertIn("no longer on the board", str(cm.exception))
 
     def test_a_returning_agent_picks_its_folder_up_again(self):
         c = self.a.claim("t1")

@@ -41,8 +41,9 @@ bookkeeping and the record of which task an agent holds (`runs/<board>/active/<a
 replicated store or on disk. Consequences:
 
 * any number of server processes can run, on any machine that can reach the gateway;
-* restarting a server (or the client) with the same `--agent` name resumes the task: `claim_task` answers "you
-  already hold task X", the folder still has the edits, `submit_task` lands them;
+* restarting a server (or the client) with the same `--agent` name resumes the task: `claim_task` hands the held
+  task and its folder back (`resumed: true`; asking for a different task is refused), the folder still has the
+  edits, `submit_task` lands them;
 * a different process cannot take the task while the claim is live; after `--claim-ttl` seconds of silence it
   can, and the old owner's `submit_task` is then refused (the epoch no longer matches).
 
@@ -106,6 +107,26 @@ logged to stderr and returned as an error result, never raised.
 * Real processes on the real cluster: four `agenttrunk mcp` processes speak JSON-RPC over pipes; a replica of
   each shard group is killed meanwhile; one agent process is killed with its edit unsubmitted, restarted under
   the same name, finds its task and lands; the final counter is 4 and every task is done.
+
+## Tried with real models
+
+`examples/mcp-demo/llm_agent.py` is an MCP client driven by any OpenAI-compatible model: it starts `agenttrunk mcp`,
+offers the model the server's tools plus four file tools on the task folder (a stand-in for Claude Code's own), and
+logs every step. It was run against the local models (`eco` 9B, `quality` 27B), which serve several requests at once.
+
+* **Three eco agents at once on the ten-task board**: each took tasks, wrote files, collided on the shared files,
+  was told `stale`, synced, resolved the markers and landed; every collision was handled by following the `next`
+  hints. With a 60-step cap per agent they landed 7 of 10 before running out of steps (one agent re-read the same
+  file thirteen times in a loop); the cap, not the system, was the limit.
+* **Killed and restarted** (SIGKILL while holding a task with an edit in the folder, restarted under the same name),
+  both models: the restarted agent was handed its task back and landed it. `quality` read its own earlier work first
+  and then went on to land all ten tasks alone in 155 s. This exposed a gap, now fixed: after a restart `claim_task`
+  used to answer "you already hold task X" without the folder, so a client that only reads that answer had no path.
+  It now hands the held task, its folder and `resumed: true` back (asking for a different task is still refused).
+* **A rule the task never mentioned** (the project check requires type annotations on every function; the task text does
+  not say so): `eco` and `quality` were both told `rejected` with the failing function and the missing annotations,
+  fixed their file and landed in the next submit, and the second task landed first time with the rule applied.
+  (A first rule, docstrings on every function, never fired: both models already write them.)
 
 ## What the demo found
 

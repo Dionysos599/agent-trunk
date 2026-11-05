@@ -359,9 +359,10 @@ class GatewayIntegrationTest(unittest.TestCase):
                     self.admin("revive", "server2-2")
                 # dave's process comes back under the same name and finds his task and his edit
                 procs["dave"] = self.McpProc(self, "dave", board, Path(tmp) / "dave", None, name)
-                err, again = procs["dave"].tool("claim_task")
-                self.assertTrue(err)
-                self.assertIn("already hold", again["error"])
+                err, again = procs["dave"].tool("claim_task")                # asking again hands his task and folder back
+                self.assertFalse(err, again)
+                self.assertTrue(again["resumed"])
+                self.assertEqual(again["folder"], claimed["dave"]["folder"])
                 err, st = procs["dave"].tool("task_status")
                 self.assertEqual(st["uncommitted"], {"stats.py": "M"})
                 dave = procs["dave"]
@@ -425,7 +426,7 @@ class GatewayIntegrationTest(unittest.TestCase):
                                env=env, capture_output=True, text=True, timeout=170)
         self.assertEqual(chaos.returncode, 0, chaos.stdout[-1500:] + chaos.stderr[-500:])
         for expected in ("replica server1-1 killed", "replica server2-2 killed", "killing my own server process",
-                         "claim_task says: you already hold task", "the claim is held", "replica server1-1 revived",
+                         "after the restart claim_task says: ok=True resumed=True", "the claim is held", "replica server1-1 revived",
                          "10/10 tasks landed", "ALL DONE"):
             self.assertIn(expected, chaos.stdout)
         self.admin("revive", "server1-1")                                              # in case the script was cut short
