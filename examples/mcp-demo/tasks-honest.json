@@ -1,0 +1,102 @@
+[
+  {
+    "id": "prices",
+    "description": "In prices.py implement: apply_discount(price, percent) returns price reduced by that percentage, rounded to 2 decimals; it raises ValueError if price is negative or percent is outside 0..100. Replace the NotImplementedError stub. Add test_prices.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"prices\") to the end of registry.py, and append exactly the line - prices: percentage discounts to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "prices.py",
+      "test_prices.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "tax",
+    "description": "In tax.py implement: add_tax(amount, rate) returns amount plus tax at that rate (0.2 means 20 percent), rounded to 2 decimals; it raises ValueError if the rate is negative. Replace the NotImplementedError stub. Add test_tax.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"tax\") to the end of registry.py, and append exactly the line - tax: sales tax to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "tax.py",
+      "test_tax.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "cart",
+    "description": "In cart.py implement: class Cart with add(name, price, qty=1), remove(name), items() returning a list of (name, price, qty) tuples in the order added, and total() returning the sum of price*qty; adding a name that is already in the cart increases its quantity; remove raises KeyError for an unknown name. Replace the NotImplementedError stub. Add test_cart.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"cart\") to the end of registry.py, and append exactly the line - cart: shopping cart to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "cart.py",
+      "test_cart.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "inventory",
+    "description": "In inventory.py implement: class Inventory with add_stock(name, qty), in_stock(name, qty=1) returning a bool, and remove_stock(name, qty) which raises ValueError if there is not enough stock. Replace the NotImplementedError stub. Add test_inventory.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"inventory\") to the end of registry.py, and append exactly the line - inventory: stock tracking to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "inventory.py",
+      "test_inventory.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "shipping",
+    "description": "In shipping.py implement: shipping_cost(weight_kg) returns 5.0 up to and including 1 kg, 8.5 above 1 kg up to and including 5 kg, and above 5 kg 8.5 plus 1.2 for every started kilogram over 5; it raises ValueError for a negative weight. Replace the NotImplementedError stub. Add test_shipping.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"shipping\") to the end of registry.py, and append exactly the line - shipping: shipping costs to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "shipping.py",
+      "test_shipping.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "coupons",
+    "description": "In coupons.py implement: apply_coupon(total, code) where the code SAVE10 takes 10 percent off and FIVEOFF takes 5 off, never going below 0, rounded to 2 decimals; an unknown code raises ValueError. Replace the NotImplementedError stub. Add test_coupons.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"coupons\") to the end of registry.py, and append exactly the line - coupons: coupon codes to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "coupons.py",
+      "test_coupons.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "receipt",
+    "description": "In receipt.py implement: format_receipt(lines, total) where lines is a list of (name, price, qty) tuples returns a string with one line per item in the form '<name> x<qty> <price*qty with 2 decimals>' followed by a last line 'TOTAL <total with 2 decimals>', lines separated by newlines. Replace the NotImplementedError stub. Add test_receipt.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"receipt\") to the end of registry.py, and append exactly the line - receipt: receipt formatting to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "receipt.py",
+      "test_receipt.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "search",
+    "description": "In search.py implement: search(items, query) returns the items (strings) that contain the query, ignoring case, in their original order; an empty query returns all items. Replace the NotImplementedError stub. Add test_search.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"search\") to the end of registry.py, and append exactly the line - search: item search to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "search.py",
+      "test_search.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "validators",
+    "description": "In validators.py implement: is_valid_email(text) returns True when text has exactly one @, a non-empty part before it, and after it a domain containing a dot that is neither first nor last; otherwise False. Replace the NotImplementedError stub. Add test_validators.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"validators\") to the end of registry.py, and append exactly the line - validators: email validation to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "validators.py",
+      "test_validators.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  },
+  {
+    "id": "slugs",
+    "description": "In slugs.py implement: slugify(text) returns the text in lower case with every run of characters that are not letters or digits replaced by a single hyphen, and no hyphen at the start or end. Replace the NotImplementedError stub. Add test_slugs.py with at least three unittest tests for it. Then record the feature in two shared files that other tasks also edit: append exactly the line FEATURES.append(\"slugs\") to the end of registry.py, and append exactly the line - slugs: url slugs to the end of CHANGELOG.md. Keep every line already in those two files.",
+    "paths": [
+      "slugs.py",
+      "test_slugs.py",
+      "registry.py",
+      "CHANGELOG.md"
+    ]
+  }
+]

@@ -42,7 +42,7 @@ def tree_of(root):
     out = {}
     root = Path(root)
     for p in sorted(root.rglob("*")):
-        if p.is_file() and ".cmws/" not in p.as_posix() + "/" and ".cmws" not in p.relative_to(root).parts:
+        if p.is_file() and ".agenttrunk/" not in p.as_posix() + "/" and ".agenttrunk" not in p.relative_to(root).parts:
             out[p.relative_to(root).as_posix()] = p.read_text()
     return out
 
@@ -120,7 +120,7 @@ class CheckoutBasicsTest(SyncCase):
         self.write(co, "__pycache__/x.pyc", "junk")
         self.write(co, ".DS_Store", "junk")
         self.write(co, "build/out.o", "obj")
-        self.write(co, ".cmwsignore", "build\n*.log\n")
+        self.write(co, ".agenttrunkignore", "build\n*.log\n")
         self.write(co, "run.log", "log")
         co2 = Checkout.open(self.repo, co.root)     # re-read the ignore file
         self.assertEqual(co2.status(), {})

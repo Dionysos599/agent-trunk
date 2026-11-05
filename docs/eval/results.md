@@ -45,6 +45,8 @@ seconds, tokens (the model's own count; the command-line agent does not report o
 
 ## Results with perfect agents (10 runs per cell)
 
+![Updates lost per run, by coordination strategy](lost-updates.svg)
+
 | suite | strategy | runs | all correct | tasks satisfied | lost updates | main broken | conflicts | human escalations | seconds |
 |---|---|---|---|---|---|---|---|---|---|
 | counter | forkmerge | 10 | 5/10 | 45/50 | 0.0 | 0/10 | 3.7 | 0.5 | 1.42 |
@@ -78,6 +80,8 @@ seconds, tokens (the model's own count; the command-line agent does not report o
 
 ### How many redos does the queue need?
 
+![Runs in which every task landed, by redo budget](redo-budget.svg)
+
 When tasks race for the same line, each redo can lose the race again to a task that landed in the meantime.
 
 | tag | suite | runs | all correct | tasks satisfied | lost updates | conflicts | human escalations | seconds |
@@ -95,6 +99,8 @@ The needed budget grows with contention: with 5 racing tasks, 6 redos always suf
 runs, and 0 or 1 left most tasks for a person. The failure is always an escalation, never a lost update.
 
 ### Speed (8 independent tasks of 0.5 s)
+
+![Speedup with more agents at once](scaling.svg)
 
 | parallel | naive (s) | fork+merge (s) | speedup of fork+merge vs parallel=1 | overhead vs naive |
 |---|---|---|---|---|
@@ -145,6 +151,8 @@ What the table shows, and what it cannot:
   often a given model succeeds.
 
 ## Mixed agents: a run that found three gaps
+
+![A local model plus the claude command line: updates lost per run](mixed-agents.svg)
 
 Tasks alternate between the local model and the `claude` command line (`mixed`: the odd ones are done by
 `claude -p` in a folder), so that different kinds of agents collide. 3 runs per cell, redo budget 5.
@@ -248,6 +256,8 @@ resumes the same run (claim lifetime 3 s).
 * Token counts for the command-line agent are not available.
 
 ## Reproduce
+
+The figures above are drawn from the recorded runs by `python3 workspace/eval/charts.py`.
 
 ```bash
 export PYTHONPATH=workspace/src

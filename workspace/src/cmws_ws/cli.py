@@ -1,16 +1,21 @@
-"""Command line for the workspace service.
+"""AgentTrunk command line.
 
-    python3 -m cmws_ws.cli --url http://127.0.0.1:8080 init --from ./project
-    python3 -m cmws_ws.cli --url ... clone alice ./alice-work
-    python3 -m cmws_ws.cli status ./alice-work        # also: pull, push -m MSG, submit, resolve, watch
-    python3 -m cmws_ws.cli --url ... log
-    python3 -m cmws_ws.cli --url ... escalations         # work the merge queue left for a person
-    python3 -m cmws_ws.cli run-task alice "fix the parser" --model qwen3:27b --paths src/parser.py --submit
-    python3 -m cmws_ws.cli orchestrate r1 --goal "add a CLI flag" --model qwen3:27b --validate-cmd "python3 -m unittest"
-    python3 -m cmws_ws.cli run-status r1                 # plan, claims and result of a run (also how to resume it)
-    python3 -m cmws_ws.cli run-task bob "add tests" --exec claude -p '{prompt}'     # a command-line agent
+    agenttrunk --url http://127.0.0.1:8080 init --from ./project
+    agenttrunk --url ... clone alice ./alice-work
+    agenttrunk status ./alice-work               # also: pull, push -m MSG, submit, resolve, watch
+    agenttrunk --url ... log
+    agenttrunk --url ... escalations             # work the merge queue left for a person
+    agenttrunk run-task alice "fix the parser" --model qwen3:27b --paths src/parser.py --submit
+    agenttrunk run-task bob "add tests" --exec claude -p '{prompt}'     # a command-line agent
+    agenttrunk orchestrate r1 --goal "add a CLI flag" --model qwen3:27b --validate-cmd "python3 -m unittest"
+    agenttrunk run-status r1                     # plan, claims and result of a run (also how to resume it)
+    agenttrunk board b1 --tasks tasks.json       # put tasks on a board that agents claim from
+    agenttrunk export ./result                   # write the files of main to a folder
+    agenttrunk mcp --url ... --board b1          # serve the workspace to MCP clients (Claude Code, Cursor, ...)
 
-The URL defaults to $CMWS_URL, then http://127.0.0.1:8080 (``make run-gateway``).
+Without installing, run ``bin/agenttrunk`` from the repository, or ``python3 -m agenttrunk`` with
+``PYTHONPATH=workspace/src``. The URL defaults to $AGENTTRUNK_URL, then http://127.0.0.1:8080
+(``make run-gateway``). The old CMWS_* environment variables are still read.
 """
 
 from __future__ import annotations
@@ -22,10 +27,16 @@ import sys
 import time
 from pathlib import Path
 
+from . import __version__
 from .history import log
-from .kv import HttpKV
+from .kv import HttpKV, KVUnavailable
 from .repo import MAIN, Repository
 from .sync import STATE_DIR, Checkout, Watcher
+
+
+def _env(name: str, default=None):
+    """AGENTTRUNK_<NAME>, falling back to the old CMWS_<NAME>."""
+    return os.environ.get(f"AGENTTRUNK_{name}", os.environ.get(f"CMWS_{name}", default))
 
 
 def _read_tree(root: Path, checkout_like: Checkout = None):
@@ -50,6 +61,38 @@ def _print_escalations(items) -> int:
         for stage, status, detail in e.get("steps", []):
             print(f"    {stage:7} {status:14} {detail}")
     print(f"{len(items)} escalation(s)")
+    return 0
+
+
+def _subcommand_at(argv, name):
+    """Index of the sub-command if it is ``name``: global options come first, the sub-command is the first plain word."""
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--url", "--main"):
+            i += 2
+        elif argv[i].startswith("-"):
+            i += 1
+        else:
+            return i if argv[i] == name else None
+    return None
+
+
+def _board(a, repo: Repository) -> int:
+    from .agents.orchestrator import task_from_dict
+    from .mcp import TrunkError, TrunkService
+    try:
+        svc = TrunkService(repo, a.name, "cli")
+        if a.tasks:
+            created = svc.create_board([task_from_dict(d) for d in json.loads(a.tasks.read_text())])
+            print("board created" if created else "board already exists; its tasks were kept")
+        view = svc.board_view()
+    except (TrunkError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    print(f"board {view['board']}  main {view['main']}  escalations {view['escalations']}")
+    for t in view["tasks"]:
+        extra = t.get("by") or ", ".join(t.get("waiting_for", [])) or t.get("reason", "")
+        print(f"  {t['id']:20} {t['state']:9} {extra}")
     return 0
 
 
@@ -121,10 +164,23 @@ def _orchestrate(a, repo: Repository) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="cmws", description=__doc__,
+    args = sys.argv[1:] if argv is None else list(argv)
+    try:
+        return _main(args)
+    except KVUnavailable as e:
+        url = next((args[i + 1] for i, x in enumerate(args[:-1]) if x == "--url"), _env("URL", "http://127.0.0.1:8080"))
+        print(f"agenttrunk: cannot reach the gateway at {url}: {e}\n"
+              "Is it running? Start it with:  make run-gateway ARGS=\"--port 8080 --groups 2 --replicas 3\"\n"
+              "and point agenttrunk at it with --url or $AGENTTRUNK_URL.", file=sys.stderr)
+        return 3
+
+
+def _main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="agenttrunk", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=os.environ.get("CMWS_URL", "http://127.0.0.1:8080"))
+    ap.add_argument("--url", default=_env("URL", "http://127.0.0.1:8080"))
     ap.add_argument("--main", default=MAIN, help="name of the main ref")
+    ap.add_argument("--version", action="version", version=f"agenttrunk {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init", help="create the repository, optionally from a directory")
     p.add_argument("--from", dest="source", type=Path)
@@ -144,8 +200,8 @@ def main(argv=None) -> int:
     p.add_argument("agent"), p.add_argument("description")
     p.add_argument("--paths", nargs="*", default=[], help="files or folders the task should stay within")
     p.add_argument("--model", help="model name served at --llm-url (default worker)")
-    p.add_argument("--llm-url", default=os.environ.get("CMWS_LLM_URL", "http://127.0.0.1:11434/v1"))
-    p.add_argument("--llm-host", default=os.environ.get("CMWS_LLM_HOST"),
+    p.add_argument("--llm-url", default=_env("LLM_URL", "http://127.0.0.1:11434/v1"))
+    p.add_argument("--llm-host", default=_env("LLM_HOST"),
                    help="Host header to send (Ollama refuses unknown hosts, so behind a proxy use localhost:11434)")
     p.add_argument("--max-steps", type=int, default=30)
     p.add_argument("--exec", dest="argv", nargs=argparse.REMAINDER,
@@ -155,8 +211,8 @@ def main(argv=None) -> int:
     p.add_argument("run_id")
     p.add_argument("--goal", help="what to build; split into tasks by the model")
     p.add_argument("--tasks", type=Path, help="JSON file with the task list instead of a goal")
-    p.add_argument("--model"), p.add_argument("--llm-url", default=os.environ.get("CMWS_LLM_URL", "http://127.0.0.1:11434/v1"))
-    p.add_argument("--llm-host", default=os.environ.get("CMWS_LLM_HOST"),
+    p.add_argument("--model"), p.add_argument("--llm-url", default=_env("LLM_URL", "http://127.0.0.1:11434/v1"))
+    p.add_argument("--llm-host", default=_env("LLM_HOST"),
                    help="Host header to send (Ollama refuses unknown hosts, so behind a proxy use localhost:11434)")
     p.add_argument("--exec", dest="argv", nargs=argparse.REMAINDER, help="use a command-line agent for every task")
     p.add_argument("--validate-cmd", help="command run on the merged tree before main moves (exit 0 = accept)")
@@ -170,11 +226,24 @@ def main(argv=None) -> int:
     p.add_argument("--owner", help="name of this orchestrator (default: host and random suffix)")
     p = sub.add_parser("run-status", help="plan, claims and result of a run")
     p.add_argument("run_id")
+    p = sub.add_parser("board", help="create a board of tasks for agents to claim, or show one")
+    p.add_argument("name")
+    p.add_argument("--tasks", type=Path, help="JSON file with the tasks")
+    p = sub.add_parser("mcp", help="serve the workspace to MCP clients (Claude Code, Cursor, ...); see `agenttrunk mcp -h`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     sub.add_parser("escalations", help="work the merge queue could not land and left for a person")
+    p = sub.add_parser("export", help="write the files of main to a folder (to run or inspect the shared result)")
+    p.add_argument("dir", type=Path)
     p = sub.add_parser("log", help="history of main")
     p.add_argument("--limit", type=int, default=20)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    mcp_at = _subcommand_at(argv, "mcp")
+    if mcp_at is not None:                              # `mcp` has options of its own; hand them over untouched
+        from .mcp.server import main as mcp_main
+        glob = ap.parse_args(argv[:mcp_at] + ["log"])   # reuse the global --url / --main parsing
+        return mcp_main(["--url", glob.url, "--main", glob.main] + argv[mcp_at + 1:])
     a = ap.parse_args(argv)
-
     repo_kwargs = {"main": a.main}
     kv = HttpKV(a.url)
     if a.cmd == "init":
@@ -191,6 +260,8 @@ def main(argv=None) -> int:
         return _run_task(a, repo)
     if a.cmd == "orchestrate":
         return _orchestrate(a, repo)
+    if a.cmd == "board":
+        return _board(a, repo)
     if a.cmd == "run-status":
         from .agents import run_status
         st = run_status(kv, a.run_id)
@@ -208,6 +279,15 @@ def main(argv=None) -> int:
     if a.cmd == "escalations":
         from .agents import Escalations
         return _print_escalations(Escalations(kv).list())
+    if a.cmd == "export":
+        files = repo.main_files()
+        a.dir.mkdir(parents=True, exist_ok=True)
+        for rel, data in files.items():
+            target = a.dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        print(f"{len(files)} files of {a.main} ({repo.head()[:12]}) written to {a.dir}")
+        return 0
     if a.cmd == "log":
         for cid, c in log(repo.store, repo.head(), a.limit):
             print(f"{cid[:12]}  {c.author:12}  {c.message}")

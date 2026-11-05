@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run AgentTrunk from a checkout of the repository without installing it.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$ROOT/workspace/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m cmws_ws "$@"

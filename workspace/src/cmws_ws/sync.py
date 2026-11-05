@@ -37,8 +37,18 @@ from .renames import moved_between, side_renames
 from .repo import Repository
 from .treemerge import merge_trees
 
-STATE_DIR = ".cmws"
-DEFAULT_IGNORE = (".git", "__pycache__", ".DS_Store", ".cmwsignore")
+STATE_DIR = ".agenttrunk"
+LEGACY_STATE_DIR = ".cmws"                     # checkouts made before the rename keep working
+IGNORE_FILES = (".agenttrunkignore", ".cmwsignore")
+
+
+def state_dir_of(root) -> str:
+    """The bookkeeping folder of a checkout: the old name if that is what the folder has, else the new one."""
+    root = Path(root)
+    if not (root / STATE_DIR / "state.json").exists() and (root / LEGACY_STATE_DIR / "state.json").exists():
+        return LEGACY_STATE_DIR
+    return STATE_DIR
+DEFAULT_IGNORE = (".git", "__pycache__", ".DS_Store", ".agenttrunk", ".cmws") + IGNORE_FILES
 MARKERS = re.compile(r"^<<<<<<< .*$(?:.|\n)*?^>>>>>>> ", re.M)
 RACY_NS = 2_000_000_000          # a file modified this recently is hashed even if its stat matches
 TEXT_CONFLICTS = ("content", "add-add")
@@ -69,6 +79,7 @@ class Checkout:
         self.root = Path(root)
         self.state = state
         self._ignore_patterns: Optional[List[str]] = None
+        self.state_dir = state_dir_of(self.root)
 
     # ---- creating and opening ------------------------------------------------------------
 
@@ -76,7 +87,7 @@ class Checkout:
     def clone(cls, repo: Repository, agent_id: str, root) -> "Checkout":
         """Create the folder from a workspace branch, forking the branch from main if it is new."""
         root = Path(root)
-        if (root / STATE_DIR / "state.json").exists():
+        if (root / state_dir_of(root) / "state.json").exists():
             raise SyncError(f"{root} is already a checkout")
         if root.exists() and any(root.iterdir()):
             raise SyncError(f"{root} is not empty")
@@ -93,7 +104,7 @@ class Checkout:
 
     @classmethod
     def open(cls, repo: Repository, root) -> "Checkout":
-        path = Path(root) / STATE_DIR / "state.json"
+        path = Path(root) / state_dir_of(Path(root)) / "state.json"
         if not path.exists():
             raise SyncError(f"{root} is not a checkout (no {STATE_DIR}/state.json)")
         return cls(repo, Path(root), json.loads(path.read_text()))
@@ -123,7 +134,7 @@ class Checkout:
         return self.repo.store.get_commit(commit_id).tree
 
     def _save(self) -> None:
-        d = self.root / STATE_DIR
+        d = self.root / self.state_dir
         d.mkdir(exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=d, prefix="state-")
         with os.fdopen(fd, "w") as f:
@@ -133,16 +144,17 @@ class Checkout:
     def _patterns(self) -> List[str]:
         if self._ignore_patterns is None:
             pats = list(DEFAULT_IGNORE)
-            f = self.root / ".cmwsignore"
-            if f.exists():
-                pats += [ln.strip() for ln in f.read_text().splitlines()
-                         if ln.strip() and not ln.startswith("#")]
+            for name in IGNORE_FILES:
+                f = self.root / name
+                if f.exists():
+                    pats += [ln.strip() for ln in f.read_text().splitlines()
+                             if ln.strip() and not ln.startswith("#")]
             self._ignore_patterns = pats
         return self._ignore_patterns
 
     def ignored(self, rel: str) -> bool:
         parts = rel.split("/")
-        if parts[0] == STATE_DIR:
+        if parts[0] in (STATE_DIR, LEGACY_STATE_DIR):
             return True
         return any(fnmatch.fnmatch(part, pat) or fnmatch.fnmatch(rel, pat)
                    for pat in self._patterns() for part in parts)

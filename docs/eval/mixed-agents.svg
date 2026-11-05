@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="A local model plus the claude command line: updates lost per run">
+<rect width="760" height="380" fill="#ffffff" rx="8"/>
+<text x="24" y="32" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f2933">A local model plus the claude command line: updates lost per run</text>
+<text x="24" y="52" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">Fork + merge queue, 3 runs per bar, 5 tasks; each step fixes how work was lost in the run before</text>
+<rect x="64" y="64" width="12" height="12" rx="2" fill="#4c78a8"/>
+<text x="82" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">counter</text>
+<rect x="143" y="64" width="12" height="12" rx="2" fill="#e45756"/>
+<text x="161" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">shared</text>
+<line x1="64" y1="324.0" x2="736" y2="324.0" stroke="#d9dee3"/>
+<text x="56" y="328.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">0</text>
+<line x1="64" y1="266.0" x2="736" y2="266.0" stroke="#d9dee3"/>
+<text x="56" y="270.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">2.5</text>
+<line x1="64" y1="208.0" x2="736" y2="208.0" stroke="#d9dee3"/>
+<text x="56" y="212.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">5</text>
+<line x1="64" y1="150.0" x2="736" y2="150.0" stroke="#d9dee3"/>
+<text x="56" y="154.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">7.5</text>
+<line x1="64" y1="92.0" x2="736" y2="92.0" stroke="#d9dee3"/>
+<text x="56" y="96.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">10</text>
+<text x="14" y="208.0" transform="rotate(-90 14 208.0)" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">updates lost per run</text>
+<text x="176.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">first run</text>
+<rect x="143.0" y="285.3" width="32.0" height="38.7" rx="2" fill="#4c78a8"><title>counter / first run: 1.7</title></rect>
+<text x="159.0" y="280.3" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">1.7</text>
+<rect x="177.0" y="300.8" width="32.0" height="23.2" rx="2" fill="#e45756"><title>shared / first run: 1.0</title></rect>
+<text x="193.0" y="295.8" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">1.0</text>
+<text x="400.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">merger guard + assumed reads</text>
+<rect x="367.0" y="285.3" width="32.0" height="38.7" rx="2" fill="#4c78a8"><title>counter / merger guard + assumed reads: 1.7</title></rect>
+<text x="383.0" y="280.3" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">1.7</text>
+<rect x="401.0" y="316.3" width="32.0" height="7.7" rx="2" fill="#e45756"><title>shared / merger guard + assumed reads: 0.3</title></rect>
+<text x="417.0" y="311.3" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.3</text>
+<text x="624.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">+ no empty 'done'</text>
+<rect x="591.0" y="324.0" width="32.0" height="0.0" rx="2" fill="#4c78a8"><title>counter / + no empty 'done': 0.0</title></rect>
+<text x="607.0" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="625.0" y="324.0" width="32.0" height="0.0" rx="2" fill="#e45756"><title>shared / + no empty 'done': 0.0</title></rect>
+<text x="641.0" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+</svg>

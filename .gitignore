@@ -26,3 +26,4 @@ CLAUDE.md
 # Python
 __pycache__/
 *.pyc
+examples/mcp-demo/agents/

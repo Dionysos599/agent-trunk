@@ -207,6 +207,14 @@ class MergeQueue:
             raise fence.ClaimLost()
         return r
 
+    def attempt(self, agent_id: str, message: Optional[str] = None) -> SubmitResult:
+        """One try at landing a branch, validated, with no merger, no redo and no escalation.
+
+        For a caller that is itself an agent and can act on the answer (``conflict``, ``stale``,
+        ``rejected``, ``contended``). Raises ``fence.ClaimLost`` if a fence is installed and refuses.
+        """
+        return self._try(agent_id, message)
+
     # ---- the escalation chain -----------------------------------------------------------
 
     def land(self, task: Task, result: Optional[WorkerResult] = None, agent_id: Optional[str] = None) -> Landing:

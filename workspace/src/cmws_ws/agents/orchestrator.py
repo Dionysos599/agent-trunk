@@ -23,7 +23,7 @@ from typing import Callable, Dict, List, Optional
 from .. import kvdoc
 from ..claims import TaskClaims
 from ..kv import KV
-from ..leases import LeaseTable
+from ..leases import LeaseTable, leases_for
 from ..repo import Repository
 from .graph import InvalidGraph, TaskGraph
 from .mergequeue import MergeQueue
@@ -121,7 +121,7 @@ class Orchestrator:
             graph = namespaced(run_id, graph)
         except InvalidGraph as e:
             raise ValueError(f"task names too long for run {run_id!r}: {e}") from e
-        scheduler = Scheduler(self.repo, LeaseTable(self.kv, ttl=self.lease_ttl, clock=self.clock), self.worker,
+        scheduler = Scheduler(self.repo, leases_for(self.repo, ttl=self.lease_ttl, clock=self.clock), self.worker,
                               parallel=self.parallel, land=self.queue.as_land(), lease_ttl=self.lease_ttl,
                               poll=self.poll, patience=self.patience, sleep=self._sleep,
                               claims=self.claims(run_id), owner=self.owner, claim_ttl=self.claim_ttl)

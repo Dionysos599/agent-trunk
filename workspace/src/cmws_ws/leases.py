@@ -155,3 +155,10 @@ class LeaseTable:
     def violations(self) -> List[dict]:
         raw = self.kv.get(self._log_key)
         return json.loads(raw) if raw else []
+
+
+def leases_for(repo, ttl: float = 600.0, clock: Callable[[], float] = time.time) -> LeaseTable:
+    """The lease table of a project: leases are about the files of one ``main``, so two projects that share a
+    store (different main refs) never block each other, and everything working on the same project does."""
+    prefix = "" if repo.main == "main" else f"{repo.main}/"
+    return LeaseTable(repo.kv, ttl=ttl, clock=clock, prefix=prefix)

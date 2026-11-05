@@ -1,9 +1,10 @@
 """The workspace engine on the real replicated store, through the HTTP gateway.
 
 Starts ``make run-gateway`` (2 groups x 3 replicas) in a subprocess. Skipped when make or java is
-not available. Set CMWS_SKIP_INTEGRATION=1 to skip explicitly.
+not available. Set AGENTTRUNK_SKIP_INTEGRATION=1 (or the old CMWS_SKIP_INTEGRATION) to skip explicitly.
 """
 
+import json
 import os
 import shutil
 import signal
@@ -30,7 +31,7 @@ def free_port():
         return s.getsockname()[1]
 
 
-@unittest.skipIf(os.environ.get("CMWS_SKIP_INTEGRATION") == "1", "integration tests disabled")
+@unittest.skipIf("1" in (os.environ.get("AGENTTRUNK_SKIP_INTEGRATION"), os.environ.get("CMWS_SKIP_INTEGRATION")), "integration tests disabled")
 @unittest.skipUnless(shutil.which("make") and shutil.which("java"), "needs make and java")
 class GatewayIntegrationTest(unittest.TestCase):
     proc = None
@@ -254,6 +255,197 @@ class GatewayIntegrationTest(unittest.TestCase):
         claims = json.loads(self.kv().get(f"runs/{run_id}/claims"))
         self.assertEqual((claims[f"{run_id}-x{tag}"]["epoch"], claims[f"{run_id}-x{tag}"]["state"]), (2, "completed"))
         self.assertEqual(claims[f"{run_id}-y{tag}"]["epoch"], 1)
+
+    # ---- MCP servers as separate processes ------------------------------------------------
+
+    class McpProc:
+        """A real `agenttrunk mcp` process spoken to over its stdin/stdout, as a client would."""
+
+        def __init__(self, test, name, board, workdir, tasks=None, main=None):
+            args = [sys.executable, "-m", "cmws_ws", "--url", test.base]
+            if main:
+                args += ["--main", main]
+            args += ["mcp", "--board", board, "--agent", name, "--workdir", str(workdir), "--claim-ttl", "2"]
+            if tasks:
+                args += ["--tasks", str(tasks)]
+            env = dict(os.environ, PYTHONPATH=os.pathsep.join([SRC, ROOT]))
+            self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      text=True, env=env, bufsize=1)
+            self.n = 0
+            r = self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test"}})
+            assert r["result"]["serverInfo"]["name"] == "agenttrunk", r
+            self.p.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+            self.p.stdin.flush()
+
+        def rpc(self, method, params=None):
+            self.n += 1
+            self.p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params or {}}) + "\n")
+            self.p.stdin.flush()
+            line = self.p.stdout.readline()
+            assert line, "the server closed its output"
+            reply = json.loads(line)
+            assert reply["id"] == self.n, reply
+            return reply
+
+        def tool(self, name, **args):
+            r = self.rpc("tools/call", {"name": name, "arguments": args})["result"]
+            return r["isError"], r["structuredContent"]
+
+        def _release(self):
+            for f in (self.p.stdin, self.p.stdout):
+                try:
+                    f.close()
+                except (OSError, ValueError):
+                    pass
+
+        def kill(self):
+            self.p.kill()
+            self.p.wait()
+            self._release()
+
+        def close(self):
+            if self.p.poll() is None:
+                try:
+                    self.p.stdin.close()
+                    self.p.wait(timeout=10)
+                except (subprocess.TimeoutExpired, OSError):
+                    self.p.kill()
+                    self.p.wait()
+            self._release()
+
+    def test_mcp_agents_in_separate_processes_lose_no_update_and_one_can_be_killed_and_resume(self):
+        import tempfile
+        from pathlib import Path
+        tag = f"{time.time_ns()}"
+        name, board = f"main-{tag}", f"mb{tag}"[:32]
+        Repository.init(self.kv(), {"stats.py": b"COUNT = 0\n"}, main=name)
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "tasks.json"
+            tasks.write_text(json.dumps([{"id": f"t{i}", "description": "add one to COUNT", "paths": [f"{i}.m"]} for i in range(4)]))
+            procs = {n: self.McpProc(self, n, board, Path(tmp) / n, tasks, name) for n in ("alice", "bob", "carol", "dave")}
+            try:
+                names = [t["name"] for t in procs["alice"].rpc("tools/list")["result"]["tools"]]
+                self.assertIn("claim_task", names)
+                self.assertIn("submit_task", names)
+                claimed = {}
+                for n, pr in procs.items():
+                    err, c = pr.tool("claim_task")
+                    self.assertFalse(err, c)
+                    claimed[n] = c
+                self.assertEqual(sorted(c["task"]["id"] for c in claimed.values()), ["t0", "t1", "t2", "t3"])
+                self.admin("kill", "server1-1")                        # a replica of each group goes down mid-work
+                self.admin("kill", "server2-2")
+                try:
+                    # dave edits but his process dies before submitting
+                    dave_folder = Path(claimed["dave"]["folder"])
+                    (dave_folder / "stats.py").write_text("COUNT = 1\n")
+                    procs["dave"].kill()
+                    for n in ("alice", "bob", "carol"):
+                        pr = procs[n]
+                        for _ in range(30):
+                            main_count = int(pr.rpc("resources/read", {"uri": "agenttrunk://main/stats.py"})
+                                             ["result"]["contents"][0]["text"].split("=")[1])
+                            (Path(claimed[n]["folder"]) / "stats.py").write_text(f"COUNT = {main_count + 1}\n")
+                            err, r = pr.tool("submit_task", message=n)
+                            if r.get("status") == "landed":
+                                break
+                            self.assertEqual(r.get("status"), "stale", r)
+                            err, s = pr.tool("sync_with_main")
+                            self.assertFalse(err, s)
+                        else:
+                            self.fail(f"{n} never landed")
+                finally:
+                    self.admin("revive", "server1-1")
+                    self.admin("revive", "server2-2")
+                # dave's process comes back under the same name and finds his task and his edit
+                procs["dave"] = self.McpProc(self, "dave", board, Path(tmp) / "dave", None, name)
+                err, again = procs["dave"].tool("claim_task")
+                self.assertTrue(err)
+                self.assertIn("already hold", again["error"])
+                err, st = procs["dave"].tool("task_status")
+                self.assertEqual(st["uncommitted"], {"stats.py": "M"})
+                dave = procs["dave"]
+                for _ in range(30):
+                    main_count = int(dave.rpc("resources/read", {"uri": "agenttrunk://main/stats.py"})
+                                     ["result"]["contents"][0]["text"].split("=")[1])
+                    (dave_folder / "stats.py").write_text(f"COUNT = {main_count + 1}\n")
+                    err, r = dave.tool("submit_task", message="dave")
+                    if r.get("status") == "landed":
+                        break
+                    dave.tool("sync_with_main")
+                else:
+                    self.fail("dave never landed")
+                self.assertEqual(Repository(self.kv(), main=name).main_files()["stats.py"], b"COUNT = 4\n")
+                err, board_view = procs["alice"].tool("show_board")
+                self.assertEqual({t["state"] for t in board_view["tasks"]}, {"done"})
+            finally:
+                for pr in procs.values():
+                    pr.close()
+
+    def test_the_agenttrunk_command_creates_and_shows_a_board(self):
+        import tempfile
+        from pathlib import Path
+        tag = f"{time.time_ns()}"
+        name, board = f"main-{tag}", f"cb{tag}"[:32]
+        Repository.init(self.kv(), {"a.py": b"1\n"}, main=name)
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([SRC, ROOT]), AGENTTRUNK_URL=self.base)
+        wrapper = os.path.join(ROOT, "bin", "agenttrunk")
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "t.json"
+            tasks.write_text(json.dumps([{"id": "one", "description": "x", "paths": ["a.py"]},
+                                         {"id": "two", "description": "y", "paths": ["a.py"]}]))
+            r = subprocess.run([wrapper, "--main", name, "board", board, "--tasks", str(tasks)], env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("board created", r.stdout)
+            self.assertRegex(r.stdout, r"one\s+open")
+            self.assertRegex(r.stdout, r"two\s+waiting\s+one")
+            again = subprocess.run([wrapper, "--main", name, "board", board, "--tasks", str(tasks)], env=env,
+                                   capture_output=True, text=True, timeout=60)
+            self.assertIn("already exists", again.stdout)
+            bad = subprocess.run([wrapper, "--main", name, "board", "bad-name"], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(bad.returncode, 2)
+            out = Path(tmp) / "exported"
+            ex = subprocess.run([wrapper, "--main", name, "export", str(out)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(ex.returncode, 0, ex.stderr)
+            self.assertIn("1 files of", ex.stdout)
+            self.assertEqual((out / "a.py").read_bytes(), b"1\n")
+
+    def test_the_mcp_demo_scripted_agents_finish_the_board_and_the_setup_script_works(self):
+        import tempfile
+        demo = os.path.join(ROOT, "examples", "mcp-demo")
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([SRC, ROOT]), AGENTTRUNK_URL=self.base)
+        sim = subprocess.run([sys.executable, os.path.join(demo, "simulate.py"), "--agents", "4", "--url", self.base],
+                             env=env, capture_output=True, text=True, timeout=170)
+        self.assertEqual(sim.returncode, 0, sim.stdout[-1500:] + sim.stderr[-500:])
+        self.assertIn("10/10 tasks landed", sim.stdout)
+        self.assertIn("ALL DONE", sim.stdout)
+        self.assertRegex(sim.stdout, r"had to sync [1-9]\d* time")                 # they really did collide
+        chaos = subprocess.run([sys.executable, os.path.join(demo, "simulate.py"), "--agents", "4", "--chaos", "--url", self.base],
+                               env=env, capture_output=True, text=True, timeout=170)
+        self.assertEqual(chaos.returncode, 0, chaos.stdout[-1500:] + chaos.stderr[-500:])
+        for expected in ("replica server1-1 killed", "replica server2-2 killed", "killing my own server process",
+                         "claim_task says: you already hold task", "the claim is held", "replica server1-1 revived",
+                         "10/10 tasks landed", "ALL DONE"):
+            self.assertIn(expected, chaos.stdout)
+        self.admin("revive", "server1-1")                                              # in case the script was cut short
+        self.admin("revive", "server2-2")
+        name = f"demo{time.time_ns()}"[:30]
+        try:
+            for tasks, expect_waiting in (("tasks.json", False), ("tasks-honest.json", True)):
+                n = name + ("h" if expect_waiting else "c")
+                r = subprocess.run([os.path.join(demo, "setup.sh"), n, os.path.join(demo, tasks)], env=env,
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("board created", r.stdout)
+                self.assertEqual("waiting" in r.stdout.split("Ready.")[0], expect_waiting, r.stdout)
+                with open(os.path.join(demo, "agents", n, "alice", ".mcp.json")) as f:
+                    cfg = json.load(f)["mcpServers"]["agenttrunk"]
+                self.assertIn(n, cfg["args"])
+                self.assertEqual(sorted(os.listdir(os.path.join(demo, "agents", n))), ["alice", "bob", "carol"])
+        finally:
+            import shutil
+            shutil.rmtree(os.path.join(demo, "agents"), ignore_errors=True)
 
     def test_merge_queue_on_the_cluster_resolves_a_conflict_and_gates_main_with_a_real_command(self):
         from cmws_ws.agents import CommandValidator, Escalations, MergeQueue, Reply, ScriptedModel, Task, merger_worker

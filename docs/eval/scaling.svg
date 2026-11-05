@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="Speedup with more agents at once">
+<rect width="760" height="380" fill="#ffffff" rx="8"/>
+<text x="24" y="32" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f2933">Speedup with more agents at once</text>
+<text x="24" y="52" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">8 independent tasks of 0.5 s each, perfect agents; speedup over a single agent (higher is better)</text>
+<rect x="64" y="64" width="12" height="12" rx="2" fill="#4c78a8"/>
+<text x="82" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">ideal</text>
+<rect x="129" y="64" width="12" height="12" rx="2" fill="#e45756"/>
+<text x="147" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">shared folder (no merging)</text>
+<rect x="341" y="64" width="12" height="12" rx="2" fill="#54a24b"/>
+<text x="359" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">fork + merge queue</text>
+<line x1="64" y1="324.0" x2="720" y2="324.0" stroke="#d9dee3"/>
+<text x="56" y="328.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">0</text>
+<line x1="64" y1="266.0" x2="720" y2="266.0" stroke="#d9dee3"/>
+<text x="56" y="270.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">2.5</text>
+<line x1="64" y1="208.0" x2="720" y2="208.0" stroke="#d9dee3"/>
+<text x="56" y="212.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">5</text>
+<line x1="64" y1="150.0" x2="720" y2="150.0" stroke="#d9dee3"/>
+<text x="56" y="154.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">7.5</text>
+<line x1="64" y1="92.0" x2="720" y2="92.0" stroke="#d9dee3"/>
+<text x="56" y="96.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">10</text>
+<text x="64.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">1</text>
+<text x="157.7" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">2</text>
+<text x="345.1" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">4</text>
+<text x="720.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">8</text>
+<text x="392.0" y="366" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">agents running at once</text>
+<text x="14" y="208.0" transform="rotate(-90 14 208.0)" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">speedup</text>
+<polyline points="64.0,300.8 157.7,277.6 345.1,231.2 720.0,138.4" fill="none" stroke="#4c78a8" stroke-width="2.5" stroke-dasharray="6 4"/>
+<polyline points="64.0,300.8 157.7,280.1 345.1,250.9 720.0,187.4" fill="none" stroke="#e45756" stroke-width="2.5"/>
+<circle cx="64.0" cy="300.8" r="4" fill="#e45756"><title>shared folder (no merging) at 1: 1.00x</title></circle>
+<circle cx="157.7" cy="280.1" r="4" fill="#e45756"><title>shared folder (no merging) at 2: 1.89x</title></circle>
+<circle cx="345.1" cy="250.9" r="4" fill="#e45756"><title>shared folder (no merging) at 4: 3.15x</title></circle>
+<circle cx="720.0" cy="187.4" r="4" fill="#e45756"><title>shared folder (no merging) at 8: 5.89x</title></circle>
+<polyline points="64.0,300.8 157.7,279.8 345.1,249.5 720.0,185.9" fill="none" stroke="#54a24b" stroke-width="2.5"/>
+<circle cx="64.0" cy="300.8" r="4" fill="#54a24b"><title>fork + merge queue at 1: 1.00x</title></circle>
+<circle cx="157.7" cy="279.8" r="4" fill="#54a24b"><title>fork + merge queue at 2: 1.91x</title></circle>
+<circle cx="345.1" cy="249.5" r="4" fill="#54a24b"><title>fork + merge queue at 4: 3.21x</title></circle>
+<circle cx="720.0" cy="185.9" r="4" fill="#54a24b"><title>fork + merge queue at 8: 5.95x</title></circle>
+</svg>

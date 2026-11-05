@@ -6,7 +6,7 @@ the fetch, merge and push that landing agent work already uses (`workspace/src/c
 
 ## Model
 
-The folder records, in `.cmws/state.json`, the commit it last matched (`base`) and, per file, the
+The folder records, in `.agenttrunk/state.json` (checkouts made before the rename keep their `.cmws/`), the commit it last matched (`base`) and, per file, the
 blob id plus size and mtime it had then. Local changes are whatever differs from that record.
 Size and mtime let a scan skip hashing unchanged files; a file modified in the last two seconds
 is always hashed, because a stat match that recent cannot be trusted.

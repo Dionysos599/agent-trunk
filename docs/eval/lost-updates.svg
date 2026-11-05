@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="Updates lost per run, by coordination strategy">
+<rect width="760" height="380" fill="#ffffff" rx="8"/>
+<text x="24" y="32" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f2933">Updates lost per run, by coordination strategy</text>
+<text x="24" y="52" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">Perfect agents, 10 runs per bar; counter and shared have 5 tasks, semantic 2 (lower is better)</text>
+<rect x="64" y="64" width="12" height="12" rx="2" fill="#4c78a8"/>
+<text x="82" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">shared folder</text>
+<rect x="185" y="64" width="12" height="12" rx="2" fill="#e45756"/>
+<text x="203" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">one at a time</text>
+<rect x="306" y="64" width="12" height="12" rx="2" fill="#54a24b"/>
+<text x="324" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">fork + merge queue</text>
+<rect x="462" y="64" width="12" height="12" rx="2" fill="#b279a2"/>
+<text x="480" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">fork + merge queue, honest paths</text>
+<line x1="64" y1="324.0" x2="736" y2="324.0" stroke="#d9dee3"/>
+<text x="56" y="328.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">0</text>
+<line x1="64" y1="266.0" x2="736" y2="266.0" stroke="#d9dee3"/>
+<text x="56" y="270.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">2.5</text>
+<line x1="64" y1="208.0" x2="736" y2="208.0" stroke="#d9dee3"/>
+<text x="56" y="212.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">5</text>
+<line x1="64" y1="150.0" x2="736" y2="150.0" stroke="#d9dee3"/>
+<text x="56" y="154.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">7.5</text>
+<line x1="64" y1="92.0" x2="736" y2="92.0" stroke="#d9dee3"/>
+<text x="56" y="96.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">10</text>
+<text x="14" y="208.0" transform="rotate(-90 14 208.0)" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">updates lost per run</text>
+<text x="148.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">counter</text>
+<rect x="81.8" y="247.4" width="31.6" height="76.6" rx="2" fill="#4c78a8"><title>shared folder / counter: 3.3</title></rect>
+<text x="97.6" y="242.4" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">3.3</text>
+<rect x="115.4" y="324.0" width="31.6" height="0.0" rx="2" fill="#e45756"><title>one at a time / counter: 0.0</title></rect>
+<text x="131.2" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="149.0" y="324.0" width="31.6" height="0.0" rx="2" fill="#54a24b"><title>fork + merge queue / counter: 0.0</title></rect>
+<text x="164.8" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="182.6" y="324.0" width="31.6" height="0.0" rx="2" fill="#b279a2"><title>fork + merge queue, honest paths / counter: 0.0</title></rect>
+<text x="198.4" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<text x="316.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">shared</text>
+<rect x="249.8" y="247.4" width="31.6" height="76.6" rx="2" fill="#4c78a8"><title>shared folder / shared: 3.3</title></rect>
+<text x="265.6" y="242.4" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">3.3</text>
+<rect x="283.4" y="324.0" width="31.6" height="0.0" rx="2" fill="#e45756"><title>one at a time / shared: 0.0</title></rect>
+<text x="299.2" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="317.0" y="324.0" width="31.6" height="0.0" rx="2" fill="#54a24b"><title>fork + merge queue / shared: 0.0</title></rect>
+<text x="332.8" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="350.6" y="324.0" width="31.6" height="0.0" rx="2" fill="#b279a2"><title>fork + merge queue, honest paths / shared: 0.0</title></rect>
+<text x="366.4" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<text x="484.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">semantic</text>
+<rect x="417.8" y="300.8" width="31.6" height="23.2" rx="2" fill="#4c78a8"><title>shared folder / semantic: 1.0</title></rect>
+<text x="433.6" y="295.8" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">1.0</text>
+<rect x="451.4" y="324.0" width="31.6" height="0.0" rx="2" fill="#e45756"><title>one at a time / semantic: 0.0</title></rect>
+<text x="467.2" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="485.0" y="324.0" width="31.6" height="0.0" rx="2" fill="#54a24b"><title>fork + merge queue / semantic: 0.0</title></rect>
+<text x="500.8" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="518.6" y="324.0" width="31.6" height="0.0" rx="2" fill="#b279a2"><title>fork + merge queue, honest paths / semantic: 0.0</title></rect>
+<text x="534.4" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<text x="652.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">disjoint</text>
+<rect x="585.8" y="324.0" width="31.6" height="0.0" rx="2" fill="#4c78a8"><title>shared folder / disjoint: 0.0</title></rect>
+<text x="601.6" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="619.4" y="324.0" width="31.6" height="0.0" rx="2" fill="#e45756"><title>one at a time / disjoint: 0.0</title></rect>
+<text x="635.2" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="653.0" y="324.0" width="31.6" height="0.0" rx="2" fill="#54a24b"><title>fork + merge queue / disjoint: 0.0</title></rect>
+<text x="668.8" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+<rect x="686.6" y="324.0" width="31.6" height="0.0" rx="2" fill="#b279a2"><title>fork + merge queue, honest paths / disjoint: 0.0</title></rect>
+<text x="702.4" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0.0</text>
+</svg>

@@ -20,13 +20,14 @@ goal ──► planner ──► tasks ──► scheduler ──► agents (eac
                     replicated key/value store (survives replica failures)
 ```
 
-You can use it at three levels:
+You can use it in four ways:
 
 | You want to | Use |
 |---|---|
-| a linearizable, fault-tolerant key/value store with compare-and-set | the HTTP gateway |
+| let agents in Claude Code, Cursor or any other MCP client share one project safely | the MCP server, `agenttrunk mcp` |
+| hand a goal to several agents and get validated results | the `agenttrunk orchestrate` command |
 | a git-like workspace for agents (fork, edit, merge, stale-read detection), embedded in your own program | the Python library `cmws_ws` |
-| to hand a goal to several agents and get validated results | the `orchestrate` command |
+| a linearizable, fault-tolerant key/value store with compare-and-set | the HTTP gateway |
 
 ## Requirements
 
@@ -45,28 +46,91 @@ make
 make run-gateway ARGS="--port 8080 --groups 2 --replicas 3"
 ```
 
+Make the `agenttrunk` command available (it is a small wrapper in this repository; or install it with
+`pip install -e workspace`, which needs no other package):
+
+```bash
+export PATH="$PWD/bin:$PATH"
+export AGENTTRUNK_URL=http://127.0.0.1:8080      # where the gateway is; this is also the default
+```
+
 Put a project in it and look at it:
 
 ```bash
-export PYTHONPATH=workspace/src
-python3 -m cmws_ws.cli --url http://127.0.0.1:8080 init --from ./my-project
-python3 -m cmws_ws.cli --url http://127.0.0.1:8080 log
+agenttrunk init --from ./my-project
+agenttrunk log
 ```
 
 Give a goal to agents (here a local Ollama model; the merged result must pass your test command before
 `main` moves):
 
 ```bash
-python3 -m cmws_ws.cli --url http://127.0.0.1:8080 orchestrate run1 \
+agenttrunk orchestrate run1 \
     --goal "Add a div(a, b) function to mathx.py that raises ValueError on zero, with tests" \
     --model qwen2.5-coder:7b --parallel 3 --escalate \
     --validate-cmd "python3 -m unittest discover"
-python3 -m cmws_ws.cli --url http://127.0.0.1:8080 run-status run1
+agenttrunk run-status run1
 ```
 
 The model splits the goal into tasks, the tasks run in parallel on their own forks, and each finished
 branch is merged into `main` only if the merged tree passes `--validate-cmd`. Run the same command again
 with the same run id after a crash and it resumes instead of starting over.
+
+## Using it from Claude Code, Cursor and other MCP clients
+
+`agenttrunk mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Every client
+session that connects is one agent: it takes a task from a shared board, gets its own private branch of the
+project (normally as a folder it edits with its own tools), and submits; the merge is checked against your
+validation command before `main` moves. Several sessions, on this machine or on several, share one project
+without overwriting each other.
+
+Put the tasks on a board (optional: agents can also add tasks of their own):
+
+```bash
+cat > tasks.json <<'JSON'
+[{"id": "api",  "description": "Add a /health endpoint", "paths": ["server.py"]},
+ {"id": "docs", "description": "Document the endpoint",  "paths": ["README.md"], "depends_on": ["api"]}]
+JSON
+agenttrunk board myboard --tasks tasks.json
+```
+
+Add the server to each client, one name per agent (keep the name the same across restarts and the agent
+resumes its task). For Claude Code:
+
+```bash
+claude mcp add agenttrunk -- agenttrunk mcp --board myboard --agent alice \
+    --validate-cmd "python3 -m unittest discover"
+```
+
+or in any client's MCP configuration:
+
+```json
+{"mcpServers": {"agenttrunk": {"command": "agenttrunk",
+  "args": ["mcp", "--board", "myboard", "--agent", "alice", "--validate-cmd", "python3 -m unittest discover"]}}}
+```
+
+The agent then has these tools; every answer says what to do next:
+
+| tool | what it does |
+|---|---|
+| `show_board` | which tasks are open, claimed, waiting for another task, done or failed |
+| `claim_task` | take the next ready task (or a named one, or add one of your own with `description` and `paths`); you get a private branch and a folder |
+| `task_status` | what you changed, whether `main` moved under you, files with conflict markers |
+| `sync_with_main` | bring other agents' landed work into your branch; real conflicts become markers; it shows what `main` changed in files you also changed |
+| `submit_task` | merge into `main` after the check: `landed`, or what to do (sync, resolve, fix the failed check) |
+| `release_task` | give the task back |
+| `list_escalations` | work the system left for a person |
+
+Resources: `agenttrunk://board`, `agenttrunk://main` and `agenttrunk://main/{path}`. Options: `--workdir`
+(where task folders go), `--claim-ttl` (how long a silent agent keeps its task), `--tasks`, `--main`, `--url`.
+For a client without a file system add `--file-tools`: the branch is then edited through `list_files`,
+`read_file`, `write_file`, `replace_in_file`, `delete_file` and `move_file`, each of which accepts a
+`seq` number so that a retried call runs once. The same workflow without MCP is available to scripts as
+`agenttrunk board`, `agenttrunk clone` / `push` / `submit` (see below).
+
+A ready-made test project with ten tasks that collide on two shared files, a setup script that writes one MCP
+configuration per agent, scripted agents to try it without a model (with an optional chaos mode that kills replicas
+and an agent's server while it runs), and a checker is in [examples/mcp-demo](examples/mcp-demo). `agenttrunk export DIR` writes the files of `main` to a folder.
 
 ## Using the workspace from Python
 
@@ -136,7 +200,7 @@ task touches more than it declared, it is noted, and the merge machinery still p
 1. automatic three-way merge (line-level merge for text, rename-aware for files);
 2. a merger agent that sees both sides' intent and the conflict markers;
 3. a redo of the task on top of what landed, with a summary of what changed;
-4. a durable record for a person: `python3 -m cmws_ws.cli --url ... escalations`.
+4. a durable record for a person: `agenttrunk escalations`.
 
 At every step the merged result must pass your validator, and a resolution that silently keeps only one
 side, a branch that changed nothing although the agent said "done", and files an agent changed without
@@ -155,9 +219,9 @@ reading are all treated as failures to retry, not as success.
 Any editor or tool can work on a branch through a plain folder:
 
 ```bash
-python3 -m cmws_ws.cli --url http://127.0.0.1:8080 clone alice ./alice-work
+agenttrunk clone alice ./alice-work
 cd alice-work                   # edit files with anything
-python3 -m cmws_ws.cli status   # also: pull, push -m "message", submit, resolve <path>, watch
+agenttrunk status               # also: pull, push -m "message", submit, resolve <path>, watch
 ```
 
 `watch` keeps the folder and the branch in sync in the background. Conflicts appear as markers in the files
@@ -184,8 +248,10 @@ A majority of replicas in each group must be reachable for operations to complet
 
 ## Command reference
 
-`python3 -m cmws_ws.cli [--url URL] [--main REF] COMMAND`, with the URL defaulting to `$CMWS_URL`, then
-`http://127.0.0.1:8080`.
+`agenttrunk [--url URL] [--main REF] COMMAND`, with the URL defaulting to `$AGENTTRUNK_URL`, then
+`http://127.0.0.1:8080`. Without installing: `bin/agenttrunk`, or `PYTHONPATH=workspace/src python3 -m agenttrunk`.
+(The old `CMWS_*` environment variables and `python3 -m cmws_ws.cli` still work; the Python package is
+`cmws_ws`.)
 
 | command | what it does |
 |---|---|
@@ -195,9 +261,12 @@ A majority of replicas in each group must be reachable for operations to complet
 | `run-task AGENT "description" --model M \| --exec CMD…` | run one agent on a task in its own branch (`--submit` to land it) |
 | `orchestrate RUN_ID --goal G \| --tasks FILE.json` | plan, run in parallel, validate and land; resumable |
 | `run-status RUN_ID` | the plan, each task's state and the result of a run |
+| `board NAME [--tasks FILE]` | create a board of tasks for agents to claim, or show it |
+| `mcp [--board B --agent A ...]` | serve the workspace to MCP clients (see above) |
+| `export DIR` | write the files of `main` to a folder |
 | `escalations` | work the merge queue could not land and left for a person |
 
-`orchestrate` options: `--model` and `--llm-url` (default `http://127.0.0.1:11434/v1`, or `$CMWS_LLM_URL`),
+`orchestrate` options: `--model` and `--llm-url` (default `http://127.0.0.1:11434/v1`, or `$AGENTTRUNK_LLM_URL`),
 `--exec CMD…` to use a command-line agent for every task, `--validate-cmd`, `--parallel`, `--escalate`
 (let the model resolve conflicts and redo tasks), `--checkpoint-every`, `--claim-ttl`, `--owner`, and
 `--llm-host` for a reverse proxy in front of Ollama that needs a `Host` header such as `localhost:11434`.
@@ -215,6 +284,8 @@ mean are in [docs/eval/results.md](docs/eval/results.md). In short: agents shari
 and can leave a broken program; fork + validating merge queue lost none and left `main` valid in every
 run once the checks described above were in place, at a few percent overhead.
 
+![Updates lost per run, by coordination strategy](docs/eval/lost-updates.svg)
+
 ```bash
 python3 workspace/eval/run_eval.py --backends oracle --reps 5 --out out.jsonl && python3 workspace/eval/report.py out.jsonl
 ```
@@ -223,7 +294,7 @@ python3 workspace/eval/run_eval.py --backends oracle --reps 5 --out out.jsonl &&
 
 ```bash
 make                              # compile everything
-make test-workspace               # workspace, agents, evaluation and cluster integration tests
+make test-workspace               # workspace, agents, MCP, evaluation and cluster integration tests
 python3 run-tests.py -l 5         # the store's own tests (unit, integration, gateway, durability)
 python3 run-tests.py -l 4 -p 2    # sharded store suite (also -l 1 .. -l 3)
 ```
@@ -239,7 +310,8 @@ modules/primary-backup    primary-backup replication with a view service
 modules/paxos             multi-Paxos replicated state machine
 modules/sharded-kv        sharded store with live reconfiguration
 modules/gateway           HTTP front end and in-process cluster
-workspace/src/cmws_ws     versioned workspace, merge, sync, leases, claims, agents, CLI
+workspace/src/cmws_ws     versioned workspace, merge, sync, leases, claims, agents, MCP server, CLI
+bin/agenttrunk            the command, runnable from a checkout without installing
 workspace/eval            evaluation harness and recorded results
 workspace/tests           tests, including runs against the real gateway with replicas killed
 docs/design               design documents
