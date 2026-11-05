@@ -53,12 +53,19 @@ def _print_escalations(items) -> int:
     return 0
 
 
+def _model(a):
+    from .agents import OpenAICompatModel
+    host = getattr(a, "llm_host", None)
+    headers = {"Host": host} if host else None     # e.g. localhost:11434 behind a reverse proxy
+    return OpenAICompatModel(a.model, a.llm_url, headers=headers)
+
+
 def _run_task(a, repo: Repository) -> int:
     from .agents import CliWorker, LoopWorker, OpenAICompatModel, Task, run_task
     if a.argv:
         worker = CliWorker(a.argv)
     elif a.model:
-        worker = LoopWorker(OpenAICompatModel(a.model, a.llm_url), name=a.model, max_steps=a.max_steps)
+        worker = LoopWorker(_model(a), name=a.model, max_steps=a.max_steps)
     else:
         print("give --model NAME (served at --llm-url) or --exec COMMAND", file=sys.stderr)
         return 2
@@ -84,7 +91,7 @@ def _orchestrate(a, repo: Repository) -> int:
     if a.argv:
         worker = CliWorker(a.argv)
     elif a.model:
-        worker = LoopWorker(OpenAICompatModel(a.model, a.llm_url), name=a.model, max_steps=a.max_steps,
+        worker = LoopWorker(_model(a), name=a.model, max_steps=a.max_steps,
                             checkpoint_every=a.checkpoint_every)
     else:
         print("give --model NAME (served at --llm-url) or --exec COMMAND", file=sys.stderr)
@@ -93,10 +100,15 @@ def _orchestrate(a, repo: Repository) -> int:
     if a.tasks:
         graph = TaskGraph([task_from_dict(d) for d in json.loads(a.tasks.read_text())])
     elif a.model:
-        planner = LLMPlanner(OpenAICompatModel(a.model, a.llm_url))
+        planner = LLMPlanner(_model(a))
     validator = CommandValidator(shlex.split(a.validate_cmd)) if a.validate_cmd else None
-    queue = MergeQueue(repo, validator=validator)
-    orch = Orchestrator(repo, worker, planner=planner, queue=queue, owner=a.owner, parallel=a.parallel)
+    merger = redo = None
+    if a.escalate and a.model:
+        from .agents import merger_worker
+        merger, redo = merger_worker(_model(a)), worker      # the same model resolves conflicts and redoes tasks
+    queue = MergeQueue(repo, validator=validator, merger=merger, redo_worker=redo)
+    orch = Orchestrator(repo, worker, planner=planner, queue=queue, owner=a.owner, parallel=a.parallel,
+                        claim_ttl=a.claim_ttl)
     try:
         summary = orch.run(a.run_id, goal=a.goal, graph=graph)
     except ValueError as e:
@@ -133,6 +145,8 @@ def main(argv=None) -> int:
     p.add_argument("--paths", nargs="*", default=[], help="files or folders the task should stay within")
     p.add_argument("--model", help="model name served at --llm-url (default worker)")
     p.add_argument("--llm-url", default=os.environ.get("CMWS_LLM_URL", "http://127.0.0.1:11434/v1"))
+    p.add_argument("--llm-host", default=os.environ.get("CMWS_LLM_HOST"),
+                   help="Host header to send (Ollama refuses unknown hosts, so behind a proxy use localhost:11434)")
     p.add_argument("--max-steps", type=int, default=30)
     p.add_argument("--exec", dest="argv", nargs=argparse.REMAINDER,
                    help="run this command in a checkout instead of the built-in loop; {prompt} is replaced")
@@ -142,9 +156,15 @@ def main(argv=None) -> int:
     p.add_argument("--goal", help="what to build; split into tasks by the model")
     p.add_argument("--tasks", type=Path, help="JSON file with the task list instead of a goal")
     p.add_argument("--model"), p.add_argument("--llm-url", default=os.environ.get("CMWS_LLM_URL", "http://127.0.0.1:11434/v1"))
+    p.add_argument("--llm-host", default=os.environ.get("CMWS_LLM_HOST"),
+                   help="Host header to send (Ollama refuses unknown hosts, so behind a proxy use localhost:11434)")
     p.add_argument("--exec", dest="argv", nargs=argparse.REMAINDER, help="use a command-line agent for every task")
     p.add_argument("--validate-cmd", help="command run on the merged tree before main moves (exit 0 = accept)")
+    p.add_argument("--escalate", action="store_true",
+                   help="when a branch cannot land, let the model resolve the conflict, then redo the task")
     p.add_argument("--parallel", type=int, default=4)
+    p.add_argument("--claim-ttl", type=float, default=300.0,
+                   help="seconds a dead orchestrator's tasks stay claimed before another run may take them over")
     p.add_argument("--max-steps", type=int, default=30)
     p.add_argument("--checkpoint-every", type=int, default=3, help="tool calls between checkpoints of a task")
     p.add_argument("--owner", help="name of this orchestrator (default: host and random suffix)")

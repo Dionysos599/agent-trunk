@@ -52,6 +52,117 @@ def resolver(path, resolved):
     return merger_worker(model), model, seen
 
 
+class DroppedSideTests(unittest.TestCase):
+    """A merger that settles a conflict by keeping one whole side silently throws the other's work away."""
+
+    def setUp(self):
+        self.repo = Repository.init(MemoryKV(), {"stats.py": b"COUNT = 0\n"})
+        edit(self.repo, "a", **{"stats_dot_py": "COUNT = 1\n"})          # main will hold 1
+        edit(self.repo, "b", **{"stats_dot_py": "COUNT = 5\n"})          # b wants 5, from the same base
+        self.q_args = dict(redo_worker=Doer(lambda t, ws: ws.write("stats.py", "COUNT = 6\n")))
+
+    def land_b(self, resolved, **kw):
+        merger, model, seen = resolver("stats.py", resolved)
+        q = MergeQueue(self.repo, merger=merger, **{**self.q_args, **kw})
+        self.assertTrue(q.land(Task("a", "x")).landed)
+        return q, q.land(Task("b", "x"))
+
+    def test_keeping_only_the_branch_side_is_refused_and_the_task_redone(self):
+        q, lb = self.land_b("COUNT = 5\n")
+        self.assertEqual((lb.status, lb.via), ("landed", "redo"))
+        stages = [(s.stage, s.status) for s in lb.steps]
+        self.assertIn(("merger", "discarded-side"), stages)
+        self.assertIn("main's changes were dropped", [s.detail for s in lb.steps if s.stage == "merger"][-1])
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 6\n")
+
+    def test_keeping_only_main_side_is_refused_too(self):
+        q, lb = self.land_b("COUNT = 1\n")
+        self.assertEqual(lb.via, "redo")
+        self.assertIn("the branch's changes were dropped", [s.detail for s in lb.steps if s.status == "discarded-side"][0])
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 6\n")
+
+    def test_a_resolution_that_combines_both_sides_lands_through_the_merger(self):
+        q, lb = self.land_b("COUNT = 6\n")
+        self.assertEqual((lb.status, lb.via), ("landed", "merger"))
+        self.assertNotIn("discarded-side", [s.status for s in lb.steps])
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 6\n")
+
+    def test_without_the_guard_the_dropped_update_lands_silently(self):
+        q, lb = self.land_b("COUNT = 1\n", keep_both_sides=False)
+        self.assertEqual((lb.status, lb.via), ("landed", "merger"))
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 1\n")   # b's work is gone and nobody noticed
+
+    def test_with_nothing_left_to_redo_the_refused_resolution_goes_to_a_person(self):
+        merger, model, seen = resolver("stats.py", "COUNT = 1\n")
+        q = MergeQueue(self.repo, merger=merger)
+        q.land(Task("a", "x"))
+        lb = q.land(Task("b", "x"))
+        self.assertEqual((lb.status, lb.via), ("escalated", "human"))
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 1\n")
+        self.assertEqual(q.escalations.list()[0]["task"], "b")
+
+    def test_deleting_one_side_is_not_judged_by_this_guard(self):
+        repo = Repository.init(MemoryKV(), {"f.txt": b"x\n"})
+        ws = repo.fork("a")
+        ws.delete("f.txt")
+        ws.commit("a")
+        edit(repo, "b", **{"f_dot_txt": "y\n"})
+        merger, _, _ = resolver("f.txt", "y\n")
+        q = MergeQueue(repo, merger=merger)
+        q.land(Task("a", "x"))
+        lb = q.land(Task("b", "x"))
+        self.assertNotIn("discarded-side", [s.status for s in lb.steps])
+
+
+class EmptyWorkTests(unittest.TestCase):
+    """A worker that says "done" without having changed anything has not done the task."""
+
+    def setUp(self):
+        self.repo = Repository.init(MemoryKV(), {"stats.py": b"COUNT = 0\n"})
+        self.repo.fork("t")                                   # a branch with nothing on it
+        self.empty = WorkerResult("done", "nothing to do", None)
+
+    def test_a_done_without_changes_is_redone(self):
+        redo = Doer(lambda t, ws: ws.write("stats.py", "COUNT = 1\n"))
+        q = MergeQueue(self.repo, redo_worker=redo)
+        landing = q.land(Task("t", "bump"), self.empty)
+        self.assertEqual((landing.status, landing.via), ("landed", "redo"))
+        self.assertEqual(landing.steps[0].status, "empty")
+        self.assertIn("without changing anything", landing.steps[0].detail)
+        self.assertIn("without changing anything", redo.runs[0].context)       # the redo is told why
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 1\n")
+
+    def test_without_a_redo_worker_it_goes_to_a_person(self):
+        q = MergeQueue(self.repo)
+        landing = q.land(Task("t", "bump"), self.empty)
+        self.assertEqual((landing.status, landing.via), ("escalated", "human"))
+        self.assertEqual(q.escalations.list()[0]["reason"], "empty")
+        self.assertEqual(self.repo.main_files()["stats.py"], b"COUNT = 0\n")
+
+    def test_a_redo_that_changes_nothing_is_not_accepted_either(self):
+        redo = Doer(lambda t, ws: None)
+        q = MergeQueue(self.repo, redo_worker=redo, max_redos=2)
+        landing = q.land(Task("t", "bump"), self.empty)
+        self.assertEqual((landing.status, len(redo.runs)), ("escalated", 2))
+        self.assertEqual([s.status for s in landing.steps if s.stage == "redo"].count("empty"), 2)
+
+    def test_the_old_behaviour_is_available(self):
+        q = MergeQueue(self.repo, require_changes=False)
+        self.assertEqual(q.land(Task("t", "bump"), self.empty).status, "noop")
+
+    def test_a_task_landed_earlier_is_still_a_noop_when_its_result_has_a_commit(self):
+        ws = self.repo.resume("t")
+        ws.write("stats.py", "COUNT = 1\n")
+        res = WorkerResult("done", "ok", ws.commit("x"))
+        q = MergeQueue(self.repo)
+        self.assertTrue(q.land(Task("t", "bump"), res).landed)
+        again = q.land(Task("t", "bump"), res)                 # a restart lands it again
+        self.assertEqual(again.status, "noop")
+
+    def test_without_a_worker_result_nothing_is_assumed(self):
+        self.assertEqual(MergeQueue(self.repo).land(Task("t", "bump")).status, "noop")
+
+
 class ValidationTests(unittest.TestCase):
     def setUp(self):
         self.repo = Repository.init(MemoryKV(), dict(BASE))

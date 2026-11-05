@@ -205,13 +205,17 @@ class CliWorker:
     With ``checkpoint_every`` (seconds) whatever the command has written so far is pushed to the branch at
     that interval. If the machine dies, the next attempt starts from those files and is told what the
     branch already contains, instead of starting over.
+
+    ``assume_reads`` (default on) records every file the command changed as a read, so that a landing is
+    refused as stale when main changed one of those files meanwhile (see ``assume_read``).
     """
 
     def __init__(self, argv: Sequence[str], name: str = "cli", timeout: float = 1800.0,
                  env: Optional[Dict[str, str]] = None, keep_dir: Optional[Path] = None,
-                 checkpoint_every: Optional[float] = None) -> None:
+                 checkpoint_every: Optional[float] = None, assume_reads: bool = True) -> None:
         self.argv, self.name, self.timeout, self.env, self.keep_dir = list(argv), name, timeout, env, keep_dir
         self.checkpoint_every = checkpoint_every
+        self.assume_reads = assume_reads
 
     def run(self, task: Task, repo: Repository, agent_id: str) -> WorkerResult:
         prior = _prior_work(repo, agent_id)
@@ -237,6 +241,8 @@ class CliWorker:
                 return WorkerResult(ERROR, summary=tail, error=f"exit status {proc.returncode}: {detail}")
             pushed_before = {c.path for c in repo.resume(agent_id).changes_since_fork()}
             touched = tuple(sorted(set(co.status()) | pushed_before))
+            if self.assume_reads:
+                assume_read(repo, agent_id, touched)
             pushed = co.push(f"{task.id}: {_first_line(tail) or task.description[:60]}")
             if pushed.status in ("blocked", "conflict", "contended"):
                 return WorkerResult(ERROR, summary=tail, touched=touched,
@@ -266,6 +272,27 @@ class CliWorker:
                     raise
                 if co.status():
                     co.push(f"{task.id}: checkpoint")      # a refused push (conflict) is simply tried again later
+
+
+def assume_read(repo: Repository, agent_id: str, paths) -> List[str]:
+    """Record that the agent depended on every file it changed, as that file was at the fork base.
+
+    An agent working in a folder (``CliWorker``) never tells the workspace what it read. But a file it
+    changed it must have read, and if two such agents each turned ``COUNT = 0`` into ``COUNT = 1`` the
+    merge would take the identical edits for agreement and one increment would silently disappear. Recorded
+    as reads, those files make the stale-read check refuse the second landing, so it is redone on top of
+    the first. Returns the paths recorded.
+    """
+    ws = repo.resume(agent_id)
+    recorded = []
+    for p in sorted(set(paths)):
+        fid = ws._file_id(ws._fork_tree, p)
+        if fid is not None:
+            ws.reads.setdefault(p, fid)
+            recorded.append(p)
+    if recorded:
+        repo.save_meta(ws, ws.head)
+    return recorded
 
 
 def _prior_work(repo: Repository, agent_id: str) -> List[str]:

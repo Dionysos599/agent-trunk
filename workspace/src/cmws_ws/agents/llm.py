@@ -50,8 +50,8 @@ def _arguments(raw) -> dict:
         return {}
     try:
         parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return {"_raw": str(raw)}
+    except (TypeError, ValueError, RecursionError):        # RecursionError: absurdly nested arguments
+        return {"_raw": str(raw)[:200]}
     return parsed if isinstance(parsed, dict) else {"_raw": str(raw)}
 
 
@@ -75,8 +75,10 @@ def parse_reply(body: dict) -> Reply:
 class OpenAICompatModel:
     def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434/v1",
                  api_key: Optional[str] = None, timeout: float = 300.0, temperature: float = 0.2,
-                 retries: int = 2, backoff: float = 1.0, sleep: Callable[[float], None] = time.sleep) -> None:
+                 retries: int = 2, backoff: float = 1.0, sleep: Callable[[float], None] = time.sleep,
+                 headers: Optional[Dict[str, str]] = None) -> None:
         self.model, self.base_url = model, base_url.rstrip("/")
+        self.extra_headers = dict(headers or {})
         self.api_key, self.timeout, self.temperature = api_key, timeout, temperature
         self.retries, self.backoff, self._sleep = retries, backoff, sleep
 
@@ -85,7 +87,7 @@ class OpenAICompatModel:
                    "stream": False}
         if tools:
             payload["tools"] = tools
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = json.dumps(payload).encode()
@@ -99,7 +101,7 @@ class OpenAICompatModel:
                 last = ModelError(f"HTTP {e.code}: {e.read()[:200]!r}")
                 if e.code < 500 and e.code != 429:
                     break                                    # the request itself is wrong; retrying will not help
-            except (urllib.error.URLError, OSError, ValueError) as e:
+            except (urllib.error.URLError, OSError, ValueError, RecursionError) as e:
                 last = ModelError(f"cannot reach {self.base_url}: {e}")
             if attempt < self.retries:
                 self._sleep(self.backoff * (2 ** attempt))

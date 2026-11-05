@@ -162,11 +162,17 @@ def _has_new_markers(candidate: Dict[str, bytes], main: Dict[str, bytes]) -> Lis
     return sorted(bad)
 
 
+EMPTY = "the worker finished without changing anything"
+
+
 class MergeQueue:
     def __init__(self, repo: Repository, validator: Optional[Validator] = None, merger: Optional[Worker] = None,
                  redo_worker: Optional[Worker] = None, max_redos: int = 1,
-                 escalations: Optional[Escalations] = None) -> None:
+                 escalations: Optional[Escalations] = None, keep_both_sides: bool = True,
+                 require_changes: bool = True) -> None:
         self.repo, self.validator, self.merger = repo, validator, merger
+        self.keep_both_sides = keep_both_sides
+        self.require_changes = require_changes
         self.redo_worker, self.max_redos = redo_worker, max_redos
         self.escalations = escalations or Escalations(repo.kv)
         self._lock = threading.Lock()
@@ -217,15 +223,19 @@ class MergeQueue:
         message = f"{task.id}: {summary}"
         landing = Landing("escalated", branch=agent_id)
         orig_base = self.repo.resume(agent_id).fork_base       # what the agent saw; the merger stage moves it
-        r = self._try(agent_id, message)
-        landing.steps.append(Step("auto", r.status, self._describe(r)))
-        if r.landed or r.status == "noop":
-            return self._done(landing, r, "auto", agent_id)
-        if r.status == "contended":
-            r = self._try(agent_id, message)                 # main was moving; one more go
+        if self.require_changes and result is not None and result.ok and result.commit is None:
+            r = SubmitResult("empty", detail=EMPTY)           # "done" without a single edit is not a landing
+            landing.steps.append(Step("auto", r.status, r.detail))
+        else:
+            r = self._try(agent_id, message)
             landing.steps.append(Step("auto", r.status, self._describe(r)))
             if r.landed or r.status == "noop":
                 return self._done(landing, r, "auto", agent_id)
+            if r.status == "contended":
+                r = self._try(agent_id, message)             # main was moving; one more go
+                landing.steps.append(Step("auto", r.status, self._describe(r)))
+                if r.landed or r.status == "noop":
+                    return self._done(landing, r, "auto", agent_id)
 
         if self.merger is not None and r.status in ("conflict", "rejected"):
             mr = self._merger_stage(task, agent_id, orig_base, r, landing, message)
@@ -271,6 +281,7 @@ class MergeQueue:
             return self._try(agent_id, message)                # main moved and the conflict went away
         cid = repo.store.put_commit(Commit(merged.tree, (ws.head, main), agent_id,
                                            f"Merge main into ws/{agent_id} (conflicts marked)", repo.clock()))
+        branch_head = ws.head
         ws._adopt(cid, main)
         paths = tuple(sorted(c.path for c in merged.conflicts))
         upstream = self._upstream_summary(orig_base, main)
@@ -284,9 +295,31 @@ class MergeQueue:
         landing.steps.append(Step("merger", res.status, res.summary or res.error))
         if not res.ok:
             return None
+        if self.keep_both_sides:
+            dropped = self._dropped_a_side(repo.resume(agent_id).head, branch_head, main, [c.path for c in merged.conflicts])
+            if dropped:
+                landing.steps.append(Step("merger", "discarded-side", dropped))
+                return None
         rr = self._try(agent_id, message)
         landing.steps.append(Step("merger", f"land:{rr.status}", self._describe(rr)))
         return rr
+
+    def _dropped_a_side(self, resolved: str, branch_head: str, main: str, paths: List[str]) -> str:
+        """A resolution that equals one side's whole file threw the other side's change away.
+
+        Validation cannot see this (the program still runs, one task's effect is just gone), so the queue
+        refuses it and lets the task be redone on top of what landed. Returns a description, or "".
+        """
+        after, mine, theirs = (self.repo.files_at(c) for c in (resolved, branch_head, main))
+        for path in paths:
+            a, m, t = after.get(path), mine.get(path), theirs.get(path)
+            if a is None or m is None or t is None or m == t:
+                continue                                  # deletions and identical sides are judged elsewhere
+            if a == m:
+                return f"{path}: the resolution is the branch's version, main's changes were dropped"
+            if a == t:
+                return f"{path}: the resolution is main's version, the branch's changes were dropped"
+        return ""
 
     def _upstream_summary(self, since: str, main: str) -> str:
         store = self.repo.store
@@ -309,6 +342,9 @@ class MergeQueue:
                  task.depends_on)
         res = run_task(self.redo_worker, repo, t, redo_id)
         landing.steps.append(Step("redo", res.status, res.summary or res.error))
+        if res.ok and res.commit is None and self.require_changes:
+            landing.steps.append(Step("redo", "empty", EMPTY))
+            return None                                       # it did nothing again: try once more or give up
         return redo_id if res.ok else None
 
     def _human(self, task: Task, agent_id: str, landing: Landing, r: SubmitResult) -> Landing:

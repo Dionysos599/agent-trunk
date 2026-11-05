@@ -57,7 +57,10 @@ def _json_block(text: str):
     start = min([i for i in (body.find("["), body.find("{")) if i >= 0], default=-1)
     if start < 0:
         raise ValueError("no JSON found in the reply")
-    value, _ = json.JSONDecoder().raw_decode(body[start:])
+    try:
+        value, _ = json.JSONDecoder().raw_decode(body[start:])
+    except RecursionError:                                     # a reply nested thousands of levels deep
+        raise ValueError("the JSON in the reply is nested too deeply") from None
     return value
 
 

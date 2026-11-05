@@ -362,5 +362,50 @@ class FuzzTests(unittest.TestCase):
             self.assertIsInstance(r.content, str)
 
 
+class DeepNestingTests(unittest.TestCase):
+    """A model can emit JSON nested thousands of levels deep; older Pythons raise RecursionError on it."""
+
+    DEEP = "[" * 200_000
+
+    def test_planner_reply(self):
+        from cmws_ws.agents.planner import parse_tasks
+        with self.assertRaises(ValueError):
+            parse_tasks(self.DEEP)
+        with self.assertRaises(ValueError):
+            parse_tasks("```json\n" + self.DEEP + "\n```")
+
+    def test_tool_call_arguments(self):
+        from cmws_ws.agents.llm import _arguments, parse_reply
+        self.assertIn("_raw", _arguments(self.DEEP))
+        reply = parse_reply({"choices": [{"message": {"content": "", "tool_calls": [
+            {"id": "1", "function": {"name": "read_file", "arguments": self.DEEP}}]}}]})
+        self.assertIn("_raw", reply.tool_calls[0].arguments)
+
+    def test_whole_response_body(self):
+        import http.server
+        import threading
+        from cmws_ws.agents import ModelError, OpenAICompatModel
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                body = ("[" * 200_000).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            m = OpenAICompatModel("x", f"http://127.0.0.1:{srv.server_port}/v1", retries=0)
+            with self.assertRaises(ModelError):
+                m.chat([{"role": "user", "content": "hi"}], [])
+        finally:
+            srv.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()

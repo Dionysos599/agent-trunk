@@ -481,6 +481,37 @@ class DurableWorkerTests(unittest.TestCase):
         self.assertEqual(doc["state"]["step"], 2)
 
 
+class ModelHeaderTests(unittest.TestCase):
+    def test_extra_headers_are_sent_and_replace_the_host(self):
+        import http.server
+        from cmws_ws.agents import OpenAICompatModel
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                seen.append((self.headers["Host"], self.headers["X-Extra"], self.headers["Authorization"]))
+                body = json.dumps({"choices": [{"message": {"content": "pong"}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{srv.server_port}/v1"
+            m = OpenAICompatModel("x", url, api_key="k", headers={"Host": "localhost:11434", "X-Extra": "1"})
+            self.assertEqual(m.chat([{"role": "user", "content": "hi"}], []).content, "pong")
+            OpenAICompatModel("x", url).chat([{"role": "user", "content": "hi"}], [])
+        finally:
+            srv.shutdown()
+        self.assertEqual(seen[0], ("localhost:11434", "1", "Bearer k"))
+        self.assertEqual(seen[1][0], f"127.0.0.1:{srv.server_port}")      # without it the real host is used
+
+
 # ---- command-line worker -----------------------------------------------------------------------------
 
 import sys
@@ -554,6 +585,68 @@ class CliWorkerRecoveryTests(unittest.TestCase):
     def test_stdin_is_delivered_even_when_checkpointing(self):
         res = self.run_worker("import sys;print(len(sys.stdin.read()) > 10)", checkpoint_every=0.2)
         self.assertEqual(res.summary, "True")
+
+
+BUMP = ("import re,pathlib;p=pathlib.Path('stats.py');t=p.read_text();"
+        "n=int(re.search(r'COUNT = (\\d+)',t).group(1));p.write_text(re.sub(r'COUNT = \\d+',f'COUNT = {n+1}',t))")
+
+
+class CliReadTrackingTests(unittest.TestCase):
+    """Folder-based agents never say what they read; without help, identical edits merge as agreement."""
+
+    def agents(self, **kw):
+        repo = Repository.init(MemoryKV(), {"stats.py": b"COUNT = 0\nOTHER = 1\n"})
+        for a in ("a", "b"):
+            repo.fork(a)                                    # both start from the same main
+        for a in ("a", "b"):
+            res = CliWorker([sys.executable, "-c", BUMP], **kw).run(Task(a, "bump"), repo, a)
+            self.assertTrue(res.ok, res.error)
+        return repo
+
+    def test_two_agents_making_the_same_edit_do_not_silently_lose_one(self):
+        repo = self.agents()
+        self.assertTrue(repo.submit(repo.resume("a")).landed)
+        second = repo.submit(repo.resume("b"))
+        self.assertEqual(second.status, "stale")
+        self.assertEqual([r.path for r in second.stale_reads], ["stats.py"])
+        self.assertEqual(repo.main_files()["stats.py"], b"COUNT = 1\nOTHER = 1\n")
+
+    def test_without_the_assumption_the_second_increment_vanishes(self):
+        repo = self.agents(assume_reads=False)
+        self.assertTrue(repo.submit(repo.resume("a")).landed)
+        second = repo.submit(repo.resume("b"))
+        self.assertTrue(second.landed)                      # accepted as "the same change"
+        self.assertEqual(repo.main_files()["stats.py"], b"COUNT = 1\nOTHER = 1\n")   # two increments, one result
+
+    def test_files_it_did_not_touch_are_not_recorded(self):
+        repo = Repository.init(MemoryKV(), {"a.txt": b"1\n", "b.txt": b"2\n"})
+        repo.fork("x")
+        CliWorker([sys.executable, "-c", "open('a.txt','w').write('1x\\n')"]).run(Task("x", "t"), repo, "x")
+        self.assertEqual(sorted(repo.resume("x").reads), ["a.txt"])
+
+    def test_new_files_are_not_reads(self):
+        repo = Repository.init(MemoryKV(), {"a.txt": b"1\n"})
+        repo.fork("x")
+        CliWorker([sys.executable, "-c", "open('new.txt','w').write('n')"]).run(Task("x", "t"), repo, "x")
+        self.assertEqual(repo.resume("x").reads, {})
+
+    def test_a_file_changed_elsewhere_in_a_different_place_still_counts_as_stale(self):
+        repo = Repository.init(MemoryKV(), {"f.txt": b"top\nmiddle\nbottom\n"})
+        repo.fork("x")
+        repo.fork("y")
+        CliWorker([sys.executable, "-c", "open('f.txt','w').write('TOP\\nmiddle\\nbottom\\n')"]).run(Task("x", "t"), repo, "x")
+        ws = repo.resume("y")
+        ws.write("f.txt", "top\nmiddle\nBOTTOM\n")
+        ws.commit("y")
+        self.assertTrue(repo.submit(repo.resume("y")).landed)
+        self.assertEqual(repo.submit(repo.resume("x")).status, "stale")      # conservative: the file moved under it
+
+    def test_changes_already_pushed_by_a_checkpoint_are_recorded_too(self):
+        repo = Repository.init(MemoryKV(), {"f.txt": b"v1\n"})
+        repo.fork("x")
+        code = "import time;open('f.txt','w').write('v2\\n');time.sleep(0.8)"
+        CliWorker([sys.executable, "-c", code], checkpoint_every=0.2).run(Task("x", "t"), repo, "x")
+        self.assertEqual(sorted(repo.resume("x").reads), ["f.txt"])
 
 
 # ---- orchestrator -----------------------------------------------------------------------------------
