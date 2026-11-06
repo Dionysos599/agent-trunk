@@ -3,10 +3,16 @@
     PYTHONPATH=workspace/src python3 workspace/eval/run_eval.py --suites counter,shared --strategies naive,serial,forkmerge \
         --backends oracle --reps 5 --out results.jsonl
 
-Strategies
-  serial     one agent at a time, each starting from what the previous one landed (the safe baseline)
+Strategies (the isolation levels of doc 12, weakest first)
   naive      all agents at once in one shared folder, last writer wins (what happens without this project)
-  forkmerge  all agents at once, each on its own fork; landed through the validating merge queue
+  gitlike    forks and a three-way text merge, the merged result validated; reads are NOT checked
+             (what a branch + pull request + CI does)
+  forkmerge  gitlike plus read-set validation: a landing whose reads went stale is refused (1.0). "snapshot" is the same
+  gitlike-checks   gitlike plus the survival check and the tasks' transition checks (no read set at all)
+  serializable     forkmerge plus the survival check and the tasks' transition checks
+  serializable-append   serializable, with the files the suite declares as appending marked `append`
+  serial     one agent at a time, each starting from what the previous one landed (the safe baseline)
+  Any fork strategy takes the suffix -honest: the tasks declare their real files and take turns.
 
 Backends
   oracle     perfect agents with a delay (isolates the strategy)
@@ -35,14 +41,29 @@ sys.path[:0] = [str(HERE), str(HERE.parent / "src")]
 
 from cmws_ws.agents import (CliWorker, CommandValidator, LoopWorker, MergeQueue, OpenAICompatModel, Orchestrator, Task,
                             TaskGraph, merger_worker)
+from cmws_ws.checks import parse_checks
 from cmws_ws.kv import MemoryKV
 from cmws_ws.leases import LeaseTable
+from cmws_ws.policy import rules_from_declaration
 from cmws_ws.repo import Repository
+from cmws_ws.serial import check_serializable, check_unordered
 
 from suites import SUITES, Suite
 from workers import DirFS, OracleWorker, SloppyMerger, base_id, cli_in_dir, loop_on
 
 CLAUDE = ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits"]
+
+# strategy -> how the merge queue is set (fork strategies only)
+QUEUE = {
+    "forkmerge": dict(isolation="snapshot", survival=False, accept=False, merge=False),
+    "snapshot": dict(isolation="snapshot", survival=False, accept=False, merge=False),
+    "gitlike": dict(isolation="gitlike", survival=False, accept=False, merge=False),
+    "gitlike-checks": dict(isolation="gitlike", survival=True, accept=True, merge=False),
+    "serializable": dict(isolation="snapshot", survival=True, accept=True, merge=False),
+    "serializable-told": dict(isolation="snapshot", survival=True, accept=True, merge=False, tell=True),
+    "serializable-append": dict(isolation="snapshot", survival=True, accept=True, merge=True),
+    "serial": dict(isolation="snapshot", survival=False, accept=False, merge=False),
+}
 
 
 def _probe(code: str, files: Dict[str, str]) -> Optional[dict]:
@@ -125,16 +146,37 @@ class Backend:
         return loop_on(self.model, DirFS(root), task, self.args.max_steps)
 
 
+def _serial_columns(suite: Suite, kind: str, base: str, repo, final: Dict[str, str], reported: Dict[str, str]) -> dict:
+    """Is the final tree what some serial execution of the landed tasks gives? Only for deterministic (oracle) agents:
+    a model's edit cannot be replayed."""
+    if kind != "oracle":
+        return {"serializable": None, "serial_landing_order": None}
+    edits = {t.id: t.edit for t in suite.tasks}
+    if repo is None:                                       # shared folder: no history, so ask whether *some* order explains it
+        done = [t for t, st in reported.items() if st == "done"]
+        v = check_unordered(suite.files, final, edits, done)
+    else:
+        v = check_serializable(repo, suite.files, edits, lambda a: (b if (b := base_id(a)) in edits else None))
+    return {"serializable": v.serializable, "serial_landing_order": v.ok, "serial_tasks": len(v.order),
+            "serial_witness": v.witness, "serial_error": v.error, "serial_linear": v.linear}
+
+
 def run_one(suite: Suite, strategy: str, kind: str, args, rep: int) -> dict:
     be = Backend(kind, suite, args)
     honest = strategy.endswith("-honest")
     strategy = strategy.removesuffix("-honest") if not honest else strategy
-    tasks = [Task(t.id, t.description, t.honest if honest else t.paths) for t in suite.tasks]
     base = strategy.removesuffix("-honest")
+    qopts = QUEUE.get(base, QUEUE["forkmerge"])
+    import cmws_ws.agents.worker as _worker
+    _worker.TELL_CHECKS = qopts.get("tell", False)         # "-told": the conditions are also written into the prompt
+    tasks = [Task(t.id, t.description, t.honest if honest else t.paths, "", (),
+                  rules_from_declaration(dict(t.merge)) if qopts["merge"] else (),
+                  parse_checks(list(t.accept)) if qopts["accept"] else ()) for t in suite.tasks]
     row = {"tag": args.tag, "suite": suite.name, "strategy": strategy, "backend": kind, "rep": rep, "tasks": len(tasks),
            "parallel": 1 if base == "serial" else args.parallel}
     t0 = time.time()
     reported: Dict[str, str] = {}
+    repo = None
     if base == "naive":
         with tempfile.TemporaryDirectory(prefix="cmws-naive-") as tmp:
             root = Path(tmp)
@@ -153,7 +195,8 @@ def run_one(suite: Suite, strategy: str, kind: str, args, rep: int) -> dict:
         validator = CommandValidator([sys.executable, "-c", suite.invariant], timeout=60)
         worker = be.fork_worker()
         queue = MergeQueue(repo, validator=validator, merger=be.merger(), redo_worker=worker if kind != "oracle" or args.oracle_redo else None,
-                           max_redos=args.max_redos, keep_both_sides=not args.no_guard)
+                           max_redos=args.max_redos, keep_both_sides=not args.no_guard, isolation=qopts["isolation"],
+                           survival=qopts["survival"], accept_checks=qopts["accept"], policies=qopts["merge"])
         orch = Orchestrator(repo, worker, queue=queue, owner="eval", parallel=1 if base == "serial" else args.parallel,
                             patience=3600, poll=0.01, claim_ttl=3600)
         summary = orch.run(f"r{rep}", graph=TaskGraph(tasks))
@@ -180,6 +223,7 @@ def run_one(suite: Suite, strategy: str, kind: str, args, rep: int) -> dict:
                    escalated=len(queue.escalations.list()),
                    violations=len(LeaseTable(repo.kv).violations()))
     row["seconds"] = round(time.time() - t0, 2)
+    row.update(_serial_columns(suite, kind, base, repo if base != "naive" else None, final, reported))
     sat = _satisfied(suite, final)
     done_ids = {t for t, s in reported.items() if s == "done"}
     row.update(

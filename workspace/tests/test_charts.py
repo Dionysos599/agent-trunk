@@ -62,10 +62,28 @@ class ChartTests(unittest.TestCase):
         self.assertIn("shared folder", t)
         self.assertIn("counter", t)
 
+    def test_levels_figure_counts_serializable_runs_per_level_and_suite(self):
+        rows = [row("counter", "gitlike", 3, serializable=False), row("counter", "gitlike", 0, serializable=True),
+                row("counter", "forkmerge", 0, serializable=True), row("counter", "naive", 3, serializable=False),
+                row("counter", "serializable", 0, serializable=True), row("counter", "gitlike-checks", 0, serializable=True),
+                row("shared", "gitlike", 0, serializable=True), row("shared", "naive", 0, serializable=None)]
+        svg = charts.fig_levels(rows)
+        t = texts(svg)
+        self.assertIn("50%", t)                       # gitlike on counter: one of two runs
+        self.assertIn("100%", t)
+        self.assertIn("0%", t)
+        self.assertIn("git-like", t)
+        ET.fromstring(svg)
+
+    def test_levels_figure_with_no_rows_is_still_valid(self):
+        ET.fromstring(charts.fig_levels([]))
+
     def test_every_figure_can_be_made_from_the_recorded_runs_and_fits_its_canvas(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = charts.main(Path(tmp))
-            self.assertEqual(sorted(p.name for p in paths), ["lost-updates.svg", "mixed-agents.svg", "redo-budget.svg", "scaling.svg"])
+            names = sorted(p.name for p in paths)
+            self.assertEqual([n for n in names if n != "levels.svg"], ["lost-updates.svg", "mixed-agents.svg", "redo-budget.svg", "scaling.svg"])
+            self.assertEqual("levels.svg" in names, bool(charts.load("oracle_levels.jsonl")))
             for p in paths:
                 root = ET.fromstring(p.read_text())
                 self.assertEqual(root.get("viewBox"), "0 0 760 380")

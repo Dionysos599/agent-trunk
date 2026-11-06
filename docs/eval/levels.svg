@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="Runs equivalent to a serial execution, by isolation level">
+<rect width="760" height="380" fill="#ffffff" rx="8"/>
+<text x="24" y="32" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f2933">Runs equivalent to a serial execution, by isolation level</text>
+<text x="24" y="52" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">Perfect agents, 10 runs per bar; counter has 5 tasks that each add 1 to one line (higher is better)</text>
+<rect x="64" y="64" width="12" height="12" rx="2" fill="#4c78a8"/>
+<text x="82" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">shared folder</text>
+<rect x="185" y="64" width="12" height="12" rx="2" fill="#e45756"/>
+<text x="203" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">git-like</text>
+<rect x="271" y="64" width="12" height="12" rx="2" fill="#54a24b"/>
+<text x="289" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">+ read set (1.0)</text>
+<rect x="413" y="64" width="12" height="12" rx="2" fill="#b279a2"/>
+<text x="431" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">git-like + checks</text>
+<rect x="562" y="64" width="12" height="12" rx="2" fill="#f58518"/>
+<text x="580" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">+ read set + checks</text>
+<line x1="64" y1="324.0" x2="736" y2="324.0" stroke="#d9dee3"/>
+<text x="56" y="328.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">0</text>
+<line x1="64" y1="266.0" x2="736" y2="266.0" stroke="#d9dee3"/>
+<text x="56" y="270.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">25</text>
+<line x1="64" y1="208.0" x2="736" y2="208.0" stroke="#d9dee3"/>
+<text x="56" y="212.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">50</text>
+<line x1="64" y1="150.0" x2="736" y2="150.0" stroke="#d9dee3"/>
+<text x="56" y="154.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">75</text>
+<line x1="64" y1="92.0" x2="736" y2="92.0" stroke="#d9dee3"/>
+<text x="56" y="96.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">100</text>
+<text x="14" y="208.0" transform="rotate(-90 14 208.0)" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">runs that are serializable (%)</text>
+<text x="176.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">counter</text>
+<rect x="92.0" y="324.0" width="32.0" height="0.0" rx="2" fill="#4c78a8"><title>shared folder / counter: 0%</title></rect>
+<text x="108.0" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0%</text>
+<rect x="126.0" y="324.0" width="32.0" height="0.0" rx="2" fill="#e45756"><title>git-like / counter: 0%</title></rect>
+<text x="142.0" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0%</text>
+<rect x="160.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#54a24b"><title>+ read set (1.0) / counter: 100%</title></rect>
+<text x="176.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="194.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#b279a2"><title>git-like + checks / counter: 100%</title></rect>
+<text x="210.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="228.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#f58518"><title>+ read set + checks / counter: 100%</title></rect>
+<text x="244.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<text x="400.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">shared</text>
+<rect x="316.0" y="324.0" width="32.0" height="0.0" rx="2" fill="#4c78a8"><title>shared folder / shared: 0%</title></rect>
+<text x="332.0" y="319.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">0%</text>
+<rect x="350.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#e45756"><title>git-like / shared: 100%</title></rect>
+<text x="366.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="384.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#54a24b"><title>+ read set (1.0) / shared: 100%</title></rect>
+<text x="400.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="418.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#b279a2"><title>git-like + checks / shared: 100%</title></rect>
+<text x="434.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="452.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#f58518"><title>+ read set + checks / shared: 100%</title></rect>
+<text x="468.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<text x="624.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">disjoint</text>
+<rect x="540.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#4c78a8"><title>shared folder / disjoint: 100%</title></rect>
+<text x="556.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="574.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#e45756"><title>git-like / disjoint: 100%</title></rect>
+<text x="590.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="608.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#54a24b"><title>+ read set (1.0) / disjoint: 100%</title></rect>
+<text x="624.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="642.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#b279a2"><title>git-like + checks / disjoint: 100%</title></rect>
+<text x="658.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+<rect x="676.0" y="92.0" width="32.0" height="232.0" rx="2" fill="#f58518"><title>+ read set + checks / disjoint: 100%</title></rect>
+<text x="692.0" y="87.0" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#1f2933">100%</text>
+</svg>

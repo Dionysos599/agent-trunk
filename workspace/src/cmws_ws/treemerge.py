@@ -23,7 +23,7 @@ under its old name are merged into it under its new name instead of colliding wi
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 from .objects import DIR, FILE, Entry, ObjectStore, Tree
 from .textmerge import ConflictRegion, merge_text
@@ -47,6 +47,8 @@ class TreeMergeResult:
     auto_merged: List[str] = field(default_factory=list)  # files merged line by line
     renames_followed: List[Tuple[str, str]] = field(default_factory=list)  # edits carried across
     keep_going: bool = False
+    appended: List[str] = field(default_factory=list)  # files where both sides' pure insertions were kept (``append``)
+    policy: Optional[Callable[[str], str]] = None  # path -> merge policy (see policy.py); None means all ``relative``
 
     @property
     def clean(self) -> bool:
@@ -57,12 +59,14 @@ def merge_trees(store: ObjectStore, base: Optional[str], ours: str, theirs: str,
                 ours_label: str = "ours", theirs_label: str = "theirs",
                 ours_renames: Optional[Mapping[str, str]] = None,
                 theirs_renames: Optional[Mapping[str, str]] = None,
-                keep_going: bool = False) -> TreeMergeResult:
+                keep_going: bool = False,
+                policy: Optional[Callable[[str], str]] = None) -> TreeMergeResult:
     """Merge; with ``keep_going`` a tree is produced even when there are conflicts, holding
     conflict markers for text conflicts and the side that still has the file otherwise, so that
     a checkout can show the user the merge in progress."""
     result = TreeMergeResult(None)
     result.keep_going = keep_going
+    result.policy = policy
     ours_renames, theirs_renames = ours_renames or {}, theirs_renames or {}
     skip = set()
     for src, dst in ours_renames.items():
@@ -172,9 +176,12 @@ def _merge_file(store: ObjectStore, b: Optional[Entry], o: Entry, t: Entry, path
     except UnicodeDecodeError:
         result.conflicts.append(PathConflictInfo(path, "binary", b.id if b else None, o.id, t.id))
         return o if result.keep_going else None
-    merged = merge_text(base_s, ours_s, theirs_s, ours_label=ol, theirs_label=tl)
+    append = result.policy is not None and result.policy(path) == "append"
+    merged = merge_text(base_s, ours_s, theirs_s, ours_label=ol, theirs_label=tl, append=append)
     if merged.clean:
         result.auto_merged.append(path)
+        if merged.appended:
+            result.appended.append(path)
         return Entry(FILE, store.put_blob(merged.text.encode("utf-8")))
     kind = "add-add" if b is None else "content"
     result.conflicts.append(PathConflictInfo(

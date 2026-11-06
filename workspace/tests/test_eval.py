@@ -114,3 +114,94 @@ class StrategyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IsolationLevelTests(unittest.TestCase):
+    """The strategies of doc 12 as levels, and the serializability column."""
+
+    def run_level(self, suite, strategy, reps=3, **kw):
+        return [run_eval.run_one(SUITES[suite](), strategy, "oracle", args(**kw), rep) for rep in range(1, reps + 1)]
+
+    def test_suite_checks_are_valid_declarations(self):
+        from cmws_ws.checks import parse_checks
+        from cmws_ws.policy import rules_from_declaration
+        for name, make in SUITES.items():
+            for t in make().tasks:
+                parse_checks(list(t.accept))
+                rules_from_declaration(dict(t.merge))
+
+    def test_every_suite_check_holds_on_the_right_answer_and_fails_before(self):
+        from cmws_ws.checks import parse_checks, run_checks
+        from cmws_ws.serial import MemFS
+        for name in ("disjoint", "counter", "shared", "semantic"):
+            s = SUITES[name]()
+            before = {p: t.encode() for p, t in s.files.items()}
+            fs = MemFS(s.files)
+            for t in s.tasks:
+                old = {p: x.encode() for p, x in fs.files().items()}
+                t.edit(fs)
+                new = {p: x.encode() for p, x in fs.files().items()}
+                checks = parse_checks(list(t.accept))
+                self.assertEqual(run_checks(checks, old, new), [], (name, t.id))          # applied serially, every check passes
+                self.assertTrue(run_checks(checks, old, old), (name, t.id))                # and fails if nothing changed
+
+    def test_gitlike_loses_the_counter_and_is_not_serializable(self):
+        rows = self.run_level("counter", "gitlike")
+        self.assertTrue(all(r["serializable"] is False for r in rows))
+        self.assertTrue(all(r["lost_updates"] > 0 for r in rows))
+
+    def test_snapshot_and_forkmerge_are_serializable_on_the_counter(self):
+        for strategy in ("forkmerge", "snapshot", "serializable"):
+            rows = self.run_level("counter", strategy)
+            self.assertTrue(all(r["serializable"] is True and r["lost_updates"] == 0 for r in rows), strategy)
+
+    def test_transition_checks_alone_make_gitlike_serializable(self):
+        rows = self.run_level("counter", "gitlike-checks")
+        self.assertTrue(all(r["serializable"] is True and r["lost_updates"] == 0 and r["all_ok"] for r in rows))
+
+    def test_the_shared_suite_is_serializable_at_every_fork_level(self):
+        for strategy in ("gitlike", "forkmerge", "serializable", "serializable-append"):
+            rows = self.run_level("shared", strategy)
+            self.assertTrue(all(r["serializable"] is True for r in rows), strategy)
+
+    def test_append_removes_the_collisions_on_the_shared_suite(self):
+        rows = self.run_level("shared", "serializable-append", max_redos=0)
+        self.assertTrue(all(r["all_ok"] and r["conflicts"] == 0 and r["escalated"] == 0 for r in rows), rows[0])
+
+    def test_without_append_the_same_run_needs_redos(self):
+        rows = self.run_level("shared", "serializable", max_redos=0)
+        self.assertTrue(any(r["conflicts"] > 0 for r in rows))
+
+    def test_the_shared_folder_is_not_serializable_when_updates_are_lost(self):
+        rows = self.run_level("counter", "naive")
+        self.assertTrue(any(r["serializable"] is False for r in rows))
+        self.assertTrue(all(r["serializable"] is not None for r in rows))
+
+    def test_serial_is_always_serializable_in_landing_order(self):
+        for suite in ("counter", "shared", "disjoint"):
+            for r in self.run_level(suite, "serial"):
+                self.assertTrue(r["serial_landing_order"], suite)
+
+    def test_disjoint_is_serializable_for_everyone(self):
+        for strategy in ("naive", "gitlike", "forkmerge", "serializable", "serializable-append", "gitlike-checks"):
+            self.assertTrue(all(r["serializable"] for r in self.run_level("disjoint", strategy)), strategy)
+
+    def test_model_backends_have_no_serial_verdict(self):
+        s = SUITES["disjoint"]()
+        cols = run_eval._serial_columns(s, "ollama", "forkmerge", None, {}, {})
+        self.assertIsNone(cols["serializable"])
+
+    def test_semantic_suite_ends_with_a_working_program_at_every_level(self):
+        for strategy in ("gitlike", "forkmerge", "serializable", "gitlike-checks"):
+            for r in self.run_level("semantic", strategy, reps=2):
+                self.assertFalse(r["main_broken"], strategy)
+
+    def test_report_has_a_serializable_column(self):
+        import report
+        rows = self.run_level("counter", "gitlike", reps=2) + self.run_level("counter", "forkmerge", reps=2)
+        out = report.table(rows, ("suite", "strategy"), report.COLS)
+        self.assertIn("serializable", out)
+        self.assertIn("0/2", out)
+        self.assertIn("2/2", out)
+        rows[0]["serializable"] = None
+        self.assertIn("n/a", report.table([dict(rows[0], serializable=None)], ("suite", "strategy"), report.COLS))

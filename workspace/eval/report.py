@@ -43,6 +43,8 @@ COLS = [
     ("all correct", lambda g: f"{sum(r['all_ok'] for r in g)}/{len(g)}"),
     ("tasks satisfied", lambda g: f"{sum(r['satisfied'] for r in g)}/{sum(r['tasks'] for r in g)}"),
     ("lost updates", mean("lost_updates")),
+    ("serializable", lambda g: (lambda ks: f"{sum(1 for r in ks if r['serializable'])}/{len(ks)}" if ks else "n/a")(
+        [r for r in g if r.get("serializable") is not None])),
     ("main broken", lambda g: f"{sum(r['main_broken'] for r in g)}/{len(g)}"),
     ("conflicts", mean("conflicts")),
     ("human escalations", mean("escalated")),

@@ -31,11 +31,13 @@ from ..agents.mergequeue import Escalations, MergeQueue
 from ..agents.orchestrator import RUN_ID, agent_id, namespaced, plan_key, task_from_dict, task_to_dict
 from ..agents.session import Session
 from ..agents.worker import Task, assume_read, task_prompt
+from ..checks import unfalsifiable
 from ..claims import BUSY, COMPLETED, TaskClaims
 from ..diff import changed_files, unified_all
-from ..history import is_ancestor
+from ..history import is_ancestor, merge_base
 from ..leases import leases_for
 from ..objects import Commit
+from ..policy import FILE_NAME as MERGE_FILE, parse_rules
 from ..repo import NoSuchWorkspace, Repository
 from ..sync import MARKERS, Checkout
 
@@ -87,6 +89,21 @@ class TrunkService:
                          sort_keys=True)
         stored, _ = self.repo.kv.put_if_absent(plan_key(self.board), doc)
         return stored
+
+    def warnings(self, tasks: List[Task]) -> List[str]:
+        """Things worth a second look in a board before agents start: acceptance checks that already pass on main (they
+        cannot tell whether the task did its work) and bad lines in the project's ``.agenttrunk-merge``."""
+        out: List[str] = []
+        files = self.repo.main_files()
+        for t in tasks:
+            out += [f"task {t.id}: {w}" for w in unfalsifiable(t.accept, files)]
+        data = files.get(MERGE_FILE)
+        if data is not None:
+            try:
+                out += [f"{MERGE_FILE}: {p}" for p in parse_rules(data.decode("utf-8"))[1]]
+            except UnicodeDecodeError:
+                out.append(f"{MERGE_FILE} is not UTF-8 text and is ignored")
+        return out
 
     def tasks(self) -> List[Task]:
         """Tasks in declaration order: the stored plan, then tasks agents added themselves."""
@@ -146,6 +163,12 @@ class TrunkService:
 
     def _active(self) -> Optional[dict]:
         return kvdoc.load(self.repo.kv, self._active_key, None) or None       # "{}" marks "no task"
+
+    def _task_of(self, a: dict) -> Optional[Task]:
+        try:
+            return self._graph().by_id.get(a["full"])
+        except TrunkError:
+            return None
 
     def _need_active(self) -> dict:
         a = self._active()
@@ -246,10 +269,12 @@ class TrunkService:
                  "Use list_files, read_file, write_file and replace_in_file; every call may carry a seq number.")
         lead = "You already hold this task; here it is again. " if resumed else ""
         out = {"ok": True, "task": {"id": t.id[cut:], "description": t.description, "paths": list(t.paths),
-                                    "prompt": task_prompt(Task(t.id, t.description, t.paths, t.context))},
+                                    "prompt": task_prompt(Task(t.id, t.description, t.paths, t.context, (), (), t.accept))},
                "branch": f"ws/{t.id}", "folder": folder, "main": _short(self.repo.head()),
                "next": f"{lead}{where} Stay inside the declared paths. When done call submit_task; if it says main moved, "
                        "call sync_with_main, check the result, then submit_task."}
+        if t.accept:
+            out["task"]["accept"] = [c.describe() for c in t.accept]
         if resumed:
             out["resumed"] = True
         return out
@@ -358,7 +383,10 @@ class TrunkService:
                 ws._adopt(main, main)
                 status, conflicts = "fast-forward", []
             else:
-                merged = self.repo.merge_into(ws.head, main, f"ws/{a['full']}", "main", keep_going=True)
+                task = self._task_of(a)
+                policy = self.repo.policy_table(main, task.merge if task is not None and self.queue.policies else ())
+                before_sync, base_commit = ws.head, merge_base(store, ws.head, main)
+                merged = self.repo.merge_into(ws.head, main, f"ws/{a['full']}", "main", keep_going=True, policy=policy)
                 tree = merged.tree
                 cid = store.put_commit(Commit(tree, (ws.head, main), a["full"],
                                               f"Merge main into ws/{a['full']}" + (" (conflicts marked)" if merged.conflicts else ""),
@@ -366,6 +394,10 @@ class TrunkService:
                 ws._adopt(cid, main)
                 conflicts = sorted(c.path for c in merged.conflicts)
                 status = "merged-with-conflicts" if conflicts else "merged"
+                if conflicts and base_commit is not None:
+                    # remember what was merged, so that submit can check that the resolution kept both sides' lines
+                    kvdoc.update(self.repo.kv, self._active_key, lambda d: d.update(
+                        synced={"base": base_commit, "mine": before_sync, "main": main, "paths": conflicts}), {})
             if a["mode"] == "folder":
                 pulled = self._checkout(a).pull()
                 brought = pulled.updated
@@ -426,15 +458,30 @@ class TrunkService:
             if not changed:
                 return {"ok": False, "status": "nothing-to-land",
                         "next": "Your branch has no changes. Do the task (edit files), then submit_task; or release_task."}
+            lost = self._lost_in_resolution(a, ws)
+            if lost:
+                return {"ok": False, "status": "rejected", "detail": lost,
+                        "next": ("Your resolution of the conflicts dropped work: " + lost + "\nPut those lines back (the "
+                                 "result must keep what both you and main added), then submit_task again.")}
             assume_read(self.repo, a["full"], changed)        # a file you changed is a file you depended on
             owner, epoch, full = self.owner, a["epoch"], a["full"]
             guard = lambda: None if self.claims.holds(full, owner, epoch) else fence.LOST        # noqa: E731
             try:
-                with fence.fenced(guard):
+                with fence.fenced(guard), self.queue.for_task(self._task_of(a)):
                     r = self.queue.attempt(full, text)
             except fence.ClaimLost:
                 raise TrunkError("Your claim on this task was taken over while landing; nothing was landed.")
             return self._landing_result(a, r, changed)
+
+    def _lost_in_resolution(self, a: dict, ws) -> str:
+        """After a sync that left conflict markers: did the resolution keep both sides' added lines?"""
+        rec = a.get("synced")
+        if not rec or not self.queue.survival:
+            return ""
+        try:
+            return self.queue._survival(rec["base"], rec["mine"], rec["main"], ws.head, rec.get("paths"))
+        except Exception:                                    # noqa: BLE001 - a missing commit must not block landing
+            return ""
 
     def _landing_result(self, a: dict, r, changed: List[str]) -> dict:
         if r.landed or r.status == "noop":

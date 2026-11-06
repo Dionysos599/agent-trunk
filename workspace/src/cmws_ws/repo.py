@@ -19,13 +19,15 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence
 
 from .history import ancestors, is_ancestor, merge_base
 from .kv import KV
 from .objects import DIR, FILE, Commit, ObjectStore
+from .policy import APPEND, CONVERGE, PolicyTable, Rule
 from .refs import RefStore
 from .renames import side_renames
+from .textmerge import hunks, split_lines
 from .treemerge import PathConflictInfo, TreeMergeResult, merge_trees
 from .workspace import StaleRead, Workspace
 
@@ -138,14 +140,46 @@ class Repository:
 
     # ---- stale reads ---------------------------------------------------------------------
 
-    def stale_reads(self, ws: Workspace, upstream: str) -> List[StaleRead]:
-        """Reads of ``ws`` that upstream has since invalidated."""
+    def policy_table(self, ref_commit: str, task_rules: Sequence[Rule] = ()) -> PolicyTable:
+        """The merge rules for a landing on ``ref_commit``: the project's file as it is there, then the task's."""
+        return PolicyTable.for_tree(self.store, self.store.get_commit(ref_commit).tree, task_rules)
+
+    def _only_inserts(self, old: Optional[str], new: Optional[str]) -> bool:
+        """True when ``new`` differs from ``old`` (blob ids, None = absent) only by inserted lines, or not at all."""
+        if old == new:
+            return True
+        if new is None:
+            return False                                    # the file was deleted
+        try:
+            a = split_lines(self.store.get_blob(old).decode("utf-8")) if old else []
+            b = split_lines(self.store.get_blob(new).decode("utf-8"))
+        except UnicodeDecodeError:
+            return False
+        return all(h.start == h.end for h in hunks(a, b))
+
+    def _relaxed(self, ws: Workspace, path: str, observed: Optional[str], current: Optional[str],
+                 policy: Optional[PolicyTable]) -> bool:
+        """Whether the declared policy of ``path`` makes this stale read harmless (see policy.py)."""
+        kind = policy.policy_for(path) if policy else None
+        if kind == CONVERGE:
+            return True
+        if kind == APPEND:
+            mine = self._file_in(ws.head, path)
+            return self._only_inserts(observed, current) and self._only_inserts(observed, mine)
+        return False
+
+    def _file_in(self, commit: str, path: str) -> Optional[str]:
+        e = self.store.lookup(self.store.get_commit(commit).tree, path)
+        return e.id if e is not None and e.mode == FILE else None
+
+    def stale_reads(self, ws: Workspace, upstream: str, policy: Optional[PolicyTable] = None) -> List[StaleRead]:
+        """Reads of ``ws`` that upstream has since invalidated (minus those a declared policy excuses)."""
         tree = self.store.get_commit(upstream).tree
         out: List[StaleRead] = []
         for path, observed in sorted(ws.reads.items()):
             entry = self.store.lookup(tree, path)
             current = entry.id if entry is not None and entry.mode == FILE else None
-            if current != observed:
+            if current != observed and not self._relaxed(ws, path, observed, current, policy):
                 out.append(StaleRead(path, "file", observed, current))
         for directory, observed_names in sorted(ws.listings.items()):
             entry = self.store.lookup(tree, directory)
@@ -158,7 +192,8 @@ class Repository:
     # ---- merging -------------------------------------------------------------------------
 
     def merge_into(self, ours: str, theirs: str, ours_label: str = "ours",
-                   theirs_label: str = "theirs", keep_going: bool = False) -> TreeMergeResult:
+                   theirs_label: str = "theirs", keep_going: bool = False,
+                   policy: Optional[PolicyTable] = None) -> TreeMergeResult:
         """Three-way merge of two commits' trees around their merge base."""
         base = merge_base(self.store, ours, theirs)
         base_tree = self.store.get_commit(base).tree if base else None
@@ -166,13 +201,15 @@ class Repository:
                            self.store.get_commit(theirs).tree, ours_label, theirs_label,
                            ours_renames=side_renames(self.store, base, ours),
                            theirs_renames=side_renames(self.store, base, theirs),
-                           keep_going=keep_going)
+                           keep_going=keep_going, policy=policy.policy_for if policy else None)
 
     # ---- submit --------------------------------------------------------------------------
 
     def submit(self, ws: Workspace, message: Optional[str] = None,
                allow_stale: bool = False,
-               validate: Optional[Callable[[str], Optional[str]]] = None) -> SubmitResult:
+               validate: Optional[Callable[[str], Optional[str]]] = None,
+               task_rules: Sequence[Rule] = (),
+               validate_against: Optional[Callable[[str, str], Optional[str]]] = None) -> SubmitResult:
         """Land the workspace's work on main.
 
         Uncommitted edits are committed first (``message``). Returns ``stale`` or ``conflict``
@@ -182,7 +219,10 @@ class Repository:
         ``validate`` is called with the commit that would become main, after merging and before
         the compare-and-set; it returns None to accept or a message to refuse (status 'rejected',
         main untouched). It runs again if main moves and the merge has to be redone, so whatever
-        it approved is exactly what lands.
+        it approved is exactly what lands. ``validate_against`` is the same with the main the candidate was built on
+        as a second argument (the reference point for checks over the change this landing makes).
+        ``task_rules`` are the task's own merge-policy rules; the project's ``.agenttrunk-merge`` is read from the
+        main being merged into (policy.py).
         """
         if ws.dirty:
             ws.commit(message or f"Work by {ws.agent_id}")
@@ -194,9 +234,10 @@ class Repository:
             if is_ancestor(self.store, ws.head, main):
                 result.status = "noop"  # nothing to land, or it is all on main already
                 return result
+            policy = self.policy_table(main, task_rules)
             if main != ws.fork_base:
                 # Upstream moved since the agent last looked: were its reads still true?
-                result.stale_reads = self.stale_reads(ws, main)
+                result.stale_reads = self.stale_reads(ws, main, policy)
                 if result.stale_reads and not allow_stale:
                     result.status = "stale"
                     return result
@@ -204,7 +245,7 @@ class Repository:
                 # The branch already contains main, so landing it is just moving the ref.
                 new_main, status, merged_files = ws.head, "fast-forward", []
             else:
-                merged = self.merge_into(ws.head, main, f"ws/{ws.agent_id}", self.main)
+                merged = self.merge_into(ws.head, main, f"ws/{ws.agent_id}", self.main, policy=policy)
                 if not merged.clean:
                     result.status, result.conflicts = "conflict", merged.conflicts
                     return result
@@ -212,8 +253,8 @@ class Repository:
                     merged.tree, (main, ws.head), ws.agent_id,
                     f"Merge {ws.ref_name}" + (f": {message}" if message else ""), self.clock()))
                 status, merged_files = "merged", merged.auto_merged
-            if validate is not None:
-                problem = validate(new_main)
+            for check in (validate, (lambda c: validate_against(c, main)) if validate_against else None):
+                problem = check(new_main) if check is not None else None
                 if problem is not None:
                     result.status, result.detail = "rejected", problem
                     return result

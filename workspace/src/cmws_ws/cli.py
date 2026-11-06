@@ -83,8 +83,11 @@ def _board(a, repo: Repository) -> int:
     try:
         svc = TrunkService(repo, a.name, "cli")
         if a.tasks:
-            created = svc.create_board([task_from_dict(d) for d in json.loads(a.tasks.read_text())])
+            tasks = [task_from_dict(d) for d in json.loads(a.tasks.read_text())]
+            created = svc.create_board(tasks)
             print("board created" if created else "board already exists; its tasks were kept")
+            for w in svc.warnings(tasks):
+                print("warning:", w, file=sys.stderr)
         view = svc.board_view()
     except (TrunkError, ValueError) as e:
         print(e, file=sys.stderr)

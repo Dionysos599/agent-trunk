@@ -5,6 +5,15 @@ runs the validators on *the merged result* (not on the branch alone: two changes
 break together), and moves main only if they pass. Main therefore only ever holds states a validator
 has approved, however many agents finish at once.
 
+Between merging and validating, two cheap deterministic checks run (no model, no subprocess unless a task asks):
+the **survival check** (lines either side added or removed on purpose must have survived, ``survival.py``) and the
+task's **transition checks** (``accept``, over main before and after this landing, ``checks.py``). Merge
+policies declared by the project or the task (``policy.py``) apply while merging.
+
+``isolation`` picks how strictly reads are validated: ``snapshot`` (default, what 1.0 does) refuses a landing whose
+reads went stale; ``gitlike`` merges text only, like a branch and a pull request, and is there as the baseline
+the evaluation compares against.
+
 When a branch cannot land the queue escalates, cheapest first:
 
 1. the automatic three-way merge (inside ``Repository.submit``);
@@ -26,15 +35,18 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Sequence, Set
 
-from ..diff import changed_files, unified_all
-from ..history import commits_between
+from ..checks import run_checks
+from ..diff import changed_files, diff_trees, unified_all
+from ..history import commits_between, merge_base
 from ..kv import KV
 from ..objects import Commit
 from ..repo import Repository, SubmitResult
+from ..survival import survival_problems
 from . import fence
 from .worker import DONE, LoopWorker, Task, Worker, WorkerResult, run_task
 
@@ -166,11 +178,19 @@ EMPTY = "the worker finished without changing anything"
 
 
 class MergeQueue:
+    ISOLATIONS = ("snapshot", "gitlike")
+
     def __init__(self, repo: Repository, validator: Optional[Validator] = None, merger: Optional[Worker] = None,
                  redo_worker: Optional[Worker] = None, max_redos: int = 1,
                  escalations: Optional[Escalations] = None, keep_both_sides: bool = True,
-                 require_changes: bool = True) -> None:
+                 require_changes: bool = True, isolation: str = "snapshot", survival: bool = True,
+                 accept_checks: bool = True, policies: bool = True) -> None:
+        if isolation not in self.ISOLATIONS:
+            raise ValueError(f"unknown isolation {isolation!r}; use one of {', '.join(self.ISOLATIONS)}")
         self.repo, self.validator, self.merger = repo, validator, merger
+        self.isolation, self.survival = isolation, survival
+        self.accept_checks, self.policies = accept_checks, policies
+        self._ctx = threading.local()                    # the task being landed on this thread (for its rules and checks)
         self.keep_both_sides = keep_both_sides
         self.require_changes = require_changes
         self.redo_worker, self.max_redos = redo_worker, max_redos
@@ -180,17 +200,44 @@ class MergeQueue:
 
     # ---- validating and landing one branch ----------------------------------------------
 
-    def _validate(self, candidate: str) -> Optional[str]:
+    def _survival(self, base: str, mine: str, main: str, result: str, only: Optional[Sequence[str]] = None) -> str:
+        """Problems of the survival check between four commits, as one text ('' when all survived)."""
+        store = self.repo.store
+        t = {k: store.get_commit(c).tree for k, c in (("base", base), ("mine", mine), ("main", main), ("result", result))}
+        paths = {c.path for tree in (t["mine"], t["main"]) for c in diff_trees(store, t["base"], tree)}
+        if only is not None:
+            paths &= set(only)
+        read = lambda tree: {p: d for p in paths if (d := store.read_file(tree, p)) is not None}     # noqa: E731
+        found = survival_problems(read(t["base"]), read(t["mine"]), read(t["main"]), read(t["result"]),
+                                  "this change", "main")
+        return "; ".join(found)
+
+    def _validate(self, candidate: str, before_commit: Optional[str] = None, ws=None, task: Optional[Task] = None) -> Optional[str]:
         lost = fence.check()
         if lost is not None:
             return lost                                  # the claim moved on: do not let this land
         store = self.repo.store
-        main = self.repo.head()
+        main = before_commit or self.repo.head()
         files = self.repo.files_at(candidate)
         before = self.repo.files_at(main)
         markers = _has_new_markers(files, before)
         if markers:
             return "unresolved conflict markers in " + ", ".join(markers)
+        if self.survival and ws is not None:
+            try:
+                base = merge_base(store, main, ws.head)
+                lost_work = self._survival(base, ws.head, main, candidate) if base is not None else ""
+            except Exception as e:                       # noqa: BLE001 - a check that cannot run refuses, it never waves through
+                return f"the survival check could not run: {type(e).__name__}: {e}"
+            if lost_work:
+                return "work was lost in the merge: " + lost_work
+        if self.accept_checks and task is not None and task.accept:
+            try:
+                failed = run_checks(task.accept, before, files)
+            except Exception as e:                       # noqa: BLE001
+                return f"the acceptance checks could not run: {type(e).__name__}: {e}"
+            if failed:
+                return "acceptance check failed: " + "; ".join(failed)
         if self.validator is not None:
             changed = sorted(changed_files(store, store.get_commit(main).tree, store.get_commit(candidate).tree))
             verdict = self.validator.check(files, changed)
@@ -200,29 +247,48 @@ class MergeQueue:
         return None
 
     def _try(self, agent_id: str, message: Optional[str]) -> SubmitResult:
+        task = getattr(self._ctx, "task", None)
         with self._lock:
             ws = self.repo.resume(agent_id)
-            r = self.repo.submit(ws, message, validate=self._validate)
+            rules = task.merge if (task is not None and self.policies) else ()
+            r = self.repo.submit(ws, message, allow_stale=self.isolation == "gitlike", task_rules=rules,
+                                 validate_against=lambda cand, before: self._validate(cand, before, ws, task))
         if r.status == "rejected" and r.detail == fence.LOST:
             raise fence.ClaimLost()
         return r
 
-    def attempt(self, agent_id: str, message: Optional[str] = None) -> SubmitResult:
+    def attempt(self, agent_id: str, message: Optional[str] = None, task: Optional[Task] = None) -> SubmitResult:
         """One try at landing a branch, validated, with no merger, no redo and no escalation.
 
         For a caller that is itself an agent and can act on the answer (``conflict``, ``stale``,
         ``rejected``, ``contended``). Raises ``fence.ClaimLost`` if a fence is installed and refuses.
+        ``task`` brings its merge rules and acceptance checks into this one landing.
         """
-        return self._try(agent_id, message)
+        with self.for_task(task if task is not None else getattr(self._ctx, "task", None)):
+            return self._try(agent_id, message)
+
+    @contextmanager
+    def for_task(self, task: Optional[Task]):
+        """Within the block, landings on this thread use ``task``'s merge rules and acceptance checks."""
+        previous = getattr(self._ctx, "task", None)
+        self._ctx.task = task
+        try:
+            yield self
+        finally:
+            self._ctx.task = previous
 
     # ---- the escalation chain -----------------------------------------------------------
 
     def land(self, task: Task, result: Optional[WorkerResult] = None, agent_id: Optional[str] = None) -> Landing:
+        previous = getattr(self._ctx, "task", None)
+        self._ctx.task = task
         try:
             return self._land(task, result, agent_id)
         except fence.ClaimLost:                           # stop at once: no merger, no redo, no escalation
             return Landing("lost", branch=agent_id or task.id, detail=fence.LOST,
                            steps=[Step("fence", "lost", fence.LOST)])
+        finally:
+            self._ctx.task = previous
 
     def _land(self, task: Task, result: Optional[WorkerResult], agent_id: Optional[str]) -> Landing:
         agent_id = agent_id or task.id
@@ -284,7 +350,9 @@ class MergeQueue:
         repo = self.repo
         ws = repo.resume(agent_id)
         main = repo.head()
-        merged = repo.merge_into(ws.head, main, f"ws/{agent_id}", "main", keep_going=True)
+        rules = task.merge if self.policies else ()
+        merged = repo.merge_into(ws.head, main, f"ws/{agent_id}", "main", keep_going=True,
+                                 policy=repo.policy_table(main, rules))
         if merged.clean and r.status == "conflict":
             return self._try(agent_id, message)                # main moved and the conflict went away
         cid = repo.store.put_commit(Commit(merged.tree, (ws.head, main), agent_id,
@@ -304,7 +372,13 @@ class MergeQueue:
         if not res.ok:
             return None
         if self.keep_both_sides:
-            dropped = self._dropped_a_side(repo.resume(agent_id).head, branch_head, main, [c.path for c in merged.conflicts])
+            resolved = repo.resume(agent_id).head
+            dropped = self._dropped_a_side(resolved, branch_head, main, [c.path for c in merged.conflicts])
+            if not dropped and self.survival and r.status == "conflict":
+                # only the files that were in conflict: after a validation failure the merger may rewrite anything
+                base = merge_base(repo.store, branch_head, main)
+                if base is not None:
+                    dropped = self._survival(base, branch_head, main, resolved, [c.path for c in merged.conflicts])
             if dropped:
                 landing.steps.append(Step("merger", "discarded-side", dropped))
                 return None
@@ -347,7 +421,7 @@ class MergeQueue:
                  (task.context + "\n\n" if task.context else "") + why +
                  "Since then these changes landed on the main line; the project you see already includes them. "
                  "Do the task again on top of them:\n" + (diff or "(no textual changes)"),
-                 task.depends_on)
+                 task.depends_on, task.merge, task.accept)
         res = run_task(self.redo_worker, repo, t, redo_id)
         landing.steps.append(Step("redo", res.status, res.summary or res.error))
         if res.ok and res.commit is None and self.require_changes:

@@ -29,7 +29,8 @@ INSTRUCTIONS = """AgentTrunk lets several agents work on one project at the same
 Workflow: show_board (what is open) -> claim_task (you get your own private branch of the project) -> do the
 work -> submit_task (it is merged into the shared main and checked). Stay inside the paths your task declares.
 If submit_task says main changed, call sync_with_main, look at what main changed, adjust, and submit again.
-Conflicts come back as markers in the files for you to resolve. Every result has a 'next' field saying what
+Conflicts come back as markers in the files for you to resolve; keep both sides' lines. If the task lists
+'accept' conditions, they are checked against main at the moment you land. Every result has a 'next' field saying what
 to do. If you get stuck, release_task so another agent can take it."""
 
 _S = {"type": "string"}

@@ -44,10 +44,12 @@ class DirFS:
     def write(self, path: str, data) -> None:
         p = self._p(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(data, bytes):
-            p.write_bytes(data)
+        tmp = p.with_name(f".{p.name}.{threading.get_ident()}.tmp")       # replaced in one step, so a reader never sees a
+        if isinstance(data, bytes):                                         # half-written file (that would be a crash of the
+            tmp.write_bytes(data)                                           # harness, not the lost update being measured)
         else:
-            p.write_text(data)
+            tmp.write_text(data)
+        os.replace(tmp, p)
 
     def delete(self, path: str) -> None:
         p = self._p(path)

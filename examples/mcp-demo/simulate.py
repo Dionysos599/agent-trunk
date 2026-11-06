@@ -7,6 +7,9 @@ what you set up by hand. Each agent is a separate server process, one per agent 
 Code window would be. The agents work at the same time and collide on registry.py and CHANGELOG.md; the
 output shows who had to sync, and at the end the result is exported and checked.
 
+With --append the two shared files are declared `append` in the project's `.agenttrunk-merge`, so the agents' added
+lines are merged instead of colliding (compare the number of syncs with and without it).
+
 With --chaos the run is also attacked while it goes on:
   * one replica of each shard group of the store is killed a moment after the start and revived later
     (needs the gateway's admin endpoint, which `make run-gateway` serves);
@@ -200,11 +203,16 @@ def main():
     ap.add_argument("--agents", type=int, default=4)
     ap.add_argument("--url", default=os.environ.get("AGENTTRUNK_URL", "http://127.0.0.1:8080"))
     ap.add_argument("--chaos", action="store_true", help="kill replicas and one agent's server process during the run")
+    ap.add_argument("--append", action="store_true",
+                    help="declare registry.py and CHANGELOG.md as `append` (a .agenttrunk-merge file in the project): "
+                         "two agents adding lines at the end no longer collide")
     a = ap.parse_args()
     tag = str(time.time_ns())[-12:]
     main_ref, board = f"demo{tag}", f"sim{tag}"[:32]
     kv = HttpKV(a.url, timeout=30)
     files = {p.name: p.read_bytes() for p in (HERE / "project").iterdir() if p.is_file()}
+    if a.append:
+        files[".agenttrunk-merge"] = b"registry.py append\nCHANGELOG.md append\n"
     Repository.init(kv, files, main=main_ref)
     tasks = json.loads((HERE / "tasks.json").read_text())
     with tempfile.TemporaryDirectory() as tmp:
@@ -215,7 +223,7 @@ def main():
             print(r.stderr or r.stdout)
             return 2
         print(f"project in main '{main_ref}', board '{board}', {len(tasks)} tasks, {a.agents} agents"
-              + ("  [chaos on]" if a.chaos else "") + "\n")
+              + ("  [chaos on]" if a.chaos else "") + ("  [append on]" if a.append else "") + "\n")
         lock = threading.Lock()
         t0 = time.time()
 

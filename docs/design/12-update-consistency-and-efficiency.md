@@ -1,8 +1,9 @@
-# Update 1.1: consistency and efficiency (planned)
+# Update 1.1: consistency and efficiency
 
-**Status: a plan. Nothing in this document is implemented.** It is an update patch on top of tag `v1.0.0`: it says
-what changes, why, how each change will be checked, and in what order. Every number quoted as a measurement was
-taken on the 1.0 code and is marked as such.
+**Status: U1, U2 and U3 are implemented and tested (section 6.1 says what was built, where it differs from the plan,
+and what the tests cover); U4 to U7 are still plans.** It is an update patch on top of tag `v1.0.0`: it says what
+changes, why, how each change is checked, and in what order. Numbers quoted as measurements in sections 1 to 5 were
+taken on the 1.0 code and are marked as such; the measurements of the new code are in `docs/eval/results.md`.
 
 ## 1. Why an update
 
@@ -318,9 +319,9 @@ speedup) and the `claude` command line in small samples; every table says how ma
 
 | # | Work | Done when |
 |---|---|---|
-| U1 | `gitlike` strategy; serializability checker; both in the harness and the tables | the 12/12 against 0/12 result reproduces; the checker passes its hand-made histories; `docs/eval` shows the new column |
-| U2 | merge policies (`relative`, `converge`, `append`) in the merge engine, tasks and the MCP server | the demo's syncs fall from 24 to about zero with the two shared files declared `append` and nothing lost; property tests and the mutation sweep pass |
-| U3 | survival check and transition checks | the counter case is refused with no tokens; a merger keeping one side is refused; a check that cannot fail is reported |
+| U1 (done) | `gitlike` strategy; serializability checker; both in the harness and the tables | the 12/12 against 0/12 result reproduces; the checker passes its hand-made histories; `docs/eval` shows the new column |
+| U2 (done) | merge policies (`relative`, `converge`, `append`) in the merge engine, tasks and the MCP server | the demo's syncs fall from 24 to about zero with the two shared files declared `append` and nothing lost; property tests and the mutation sweep pass |
+| U3 (done) | survival check and transition checks | the counter case is refused with no tokens; a merger keeping one side is refused; a check that cannot fail is reported |
 | U4 | the ladder: re-apply and compare (after the probe), incremental continuation | tokens per resolution against full redo are measured by layer; silent-loss columns do not move |
 | U5 | width cap, hedging, shared context, speculative queue | scaling curves and token ratios for the three workloads, simulated and, where possible, real |
 | U6 | orchestrator tools and the digest | orchestrator tokens against merging in its own context, on the same tasks |
@@ -328,6 +329,92 @@ speedup) and the `claude` command line in small samples; every table says how ma
 
 U1 comes first because it needs no model and its output is the vertical axis of every later figure. U2 and U3 follow
 for the same reason. U4 waits for the probe. U5 depends on what hardware allows.
+
+### 6.1 What U1 to U3 turned into
+
+All three are done. Where the implementation differs from the text above, the difference is stated here.
+
+**U1: isolation levels and the serializability checker** (`serial.py`, `MergeQueue(isolation=...)`, `eval/run_eval.py`)
+
+* `gitlike` is `isolation="gitlike"` in the merge queue: the landing runs with `allow_stale`, so a text merge and the
+  validator decide and the read set is ignored. This replaces the plan's "unrecorded reads" (which only worked for oracle
+  agents); it works for every kind of agent and leaves `snapshot` exactly as 1.0. The harness strategies are `naive`,
+  `gitlike`, `forkmerge` (= `snapshot`), `gitlike-checks`, `serializable`, `serializable-append`, `serial`.
+* The landing order is **not** read from `main`'s first-parent line. A branch that synced `main` in and then
+  fast-forwarded has its own commits on that line and the work it absorbed on the second parent. Instead the *tip* of a
+  task (its last commit, found by author) is taken and tasks are ordered by ancestry, which is total because each new
+  `main` contains the previous one; the checker reports `linear=False` if it is not.
+* `check_serializable` compares the final tree with the serial replay in landing order; when they differ it searches
+  the other orders (up to 8 tasks) and reports a `witness`, which separates "not serializable at all" from "serializable
+  in an order other than the landing order". Shared-folder runs have no history, so `check_unordered` asks whether some
+  order of the tasks that reported done explains the final tree.
+* Result columns: `serializable` (some order), `serial_landing_order` (the landing order), `serial_witness`,
+  `serial_error`. They are `null` for model backends, whose edits cannot be replayed.
+
+**U2: merge policies** (`policy.py`, `textmerge.merge3(append=)`, `treemerge`, `Repository.submit(task_rules=)`)
+
+* Three policies, a `.agenttrunk-merge` file read **from the main being merged into**, and a task's `"merge"`
+  declaration, the later rule winning; a bad line in the file is skipped and reported, never fatal, so a typo can only
+  fall back to `relative`.
+* `append` resolves a place where *both* sides only inserted lines (`start == end` for every hunk, nothing modified
+  or deleted); the side already on `main` goes first so the file holds the lines in landing order, and a first block
+  without a final newline gets one. A modified last line, a deleted line, or a base without a final newline is still a
+  conflict. Identical insertions are agreement and appear once.
+* The plan said `converge` would let identical edits merge. In the engine identical edits were *already* taken as
+  agreement (`o == t`); what protected a counter in 1.0 was the read set. So `converge` and `append` act on the
+  **stale-read check**: `converge` excuses every stale read of the file; `append` excuses it only when what main did and
+  what the agent did to the file are both pure insertions (or nothing).
+* Applied in `submit`, `sync`, the merge queue (including the merger stage's marked merge) and the MCP service.
+* Measured: the ten-task demo with the two shared files declared `append` needs **0** syncs for 10 tasks (24 without),
+  with the same checked result, including under `--chaos`.
+* A prefix/suffix trim was added to `textmerge.hunks`: lines two texts share at both ends cannot be part of a change, and
+  trimming them first keeps the matcher's quadratic worst case to the part that differs (a 60,000-line file with an
+  appended line merges in about 40 ms). A property test checks that the hunks always rebuild the side exactly.
+
+**U3: survival and transition checks** (`survival.py`, `checks.py`, `MergeQueue(survival=, accept_checks=)`)
+
+* **Survival** judges only what it can judge without false refusals: lines added by a *pure insertion* hunk on either
+  side must be present in the result, and lines removed by a *pure deletion* hunk must have fewer copies in the result
+  than in the base. It deliberately does not judge *replaced* lines: two correct increments resolve to `+2`, which
+  matches neither side, so a check on them would refuse good work (those are the transition checks' job). A line that
+  appears among the new lines of any replacement is not held to the deletion rule. Blank lines, indentation, binary
+  and files over 2 MB are skipped. A property test (3,000 random pairs of edits) shows a clean merge never trips it.
+* Survival runs in `_validate` for every landing (reference: the merge base of `main` and the branch) and, in the
+  merger stage, **only on the files that were in conflict**, because after a validation failure a merger is *meant* to
+  rewrite things. In the MCP service the agent plays the merger: `sync_with_main` records what was merged when it left
+  markers, and `submit_task` checks the resolution against that record (`rejected` with the lines that went missing).
+* **Transition checks** (`accept`): `contains`, `absent`, `increases`, `decreases`, `exists`, `missing`, `command`;
+  strict validation at declaration (unknown keys, bad regex, a pattern without exactly one group, `by` not a whole
+  positive number, a command given as a string is split without a shell). The reference is `main` immediately before
+  *this* landing, passed to the check by `Repository.submit(validate_against=)` so that a main that moves between two
+  reads cannot give a false refusal. Order inside `_validate`: conflict markers, survival, transition checks, then your
+  validator command.
+* `warnings` (board creation, shown by `agenttrunk board`): checks that already pass on `main`, and bad lines in
+  `.agenttrunk-merge`. The conditions are **not** written into the worker's prompt by default: with `eco` it cost work (1/8
+  against 5/8 on `semantic`, `docs/eval/results.md`); the MCP `claim_task` result still lists them.
+* The suites of the evaluation carry checks (`counter`: `increases`; `shared`: the function and the registry line;
+  `semantic`; `disjoint`) and a declaration (`shared`: `append`).
+
+**What the tests cover (797 tests in the workspace, 323 of them new).** The rule language (comments, CRLF, byte-order
+mark, spaces in patterns, too many rules, NUL bytes, unicode, a file that is a directory or binary or huge); `append` as a
+property over random insertions and as a statement that it never changes what the default merges cleanly and never adds
+a conflict; every kind of check with its failure messages (big numbers, negative numbers, several matches, a capture that
+is not a number, binary and 5 MB files, commands that time out, write only to stderr, need a number on one side, or try
+to use a shell); serializability on hand-made histories including one that is serializable only in a different order,
+on random serial runs and on tampered trees; threads landing at once through one queue and through separate queues on one
+store (an increment is never lost, the checker agrees); pathological file names; a 60,000-line file; the whole path
+through the MCP service and the orchestrator. A mutation sweep over the four new modules killed 475 of 513 mutants; the
+survivors were equivalent mutants (a `return None` replaced by `None`, filters that only skip work) and six cases that were
+then pinned by `tests/test_u1u3_hardening.py`.
+
+**What these three do not do** (the limits found while building them):
+
+* Survival does not see a line added *inside* a replaced block, and neither it nor the checks can tell that a merger who
+  rewrote both sides of a conflicting modification did so correctly; that is validation and the transition checks.
+* `append` assumes that insertion order is irrelevant. A registry whose entries must stay sorted, or numbered migrations,
+  must stay `relative`.
+* A check can be wrong or too weak (section 7). The lint finds only the checks that are already true.
+* The serializability checker needs deterministic agents; for a model it is approximated by the acceptance checks.
 
 ## 7. Risks and open questions
 

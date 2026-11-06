@@ -29,6 +29,8 @@ class EvalTask:
     paths: Tuple[str, ...]
     edit: Callable[[object], None]
     honest: Tuple[str, ...] = ()     # what the task really touches; used by the "-honest" strategies
+    accept: Tuple[dict, ...] = ()    # transition checks a landing of this task must pass (checks.py)
+    merge: Tuple[Tuple[str, str], ...] = ()   # merge policies the "-append" strategy declares for this task
 
 
 @dataclass
@@ -57,7 +59,8 @@ def disjoint(n: int = 4) -> Suite:
         def edit(fs, i=i, body=body):
             fs.write(f"m{i}.py", f"def f(x):\n    return {body}\n")
         tasks.append(EvalTask(f"t{i}", f"In m{i}.py implement f(x) so that it returns {body}. Change only m{i}.py.",
-                              (f"m{i}.py",), edit, (f"m{i}.py",)))
+                              (f"m{i}.py",), edit, (f"m{i}.py",),
+                              accept=({"kind": "contains", "path": f"m{i}.py", "text": f"return {body}"},)))
     probe = ("import json\nr={}\n" + "".join(
         f"try:\n    import m{i}\n    r['t{i}']=m{i}.f(5)=={eval(b, {'x': 5})}\nexcept Exception:\n    r['t{i}']=False\n"
         for i, b in bodies.items()) + "print(json.dumps(r))")
@@ -76,7 +79,9 @@ def counter(n: int = 5) -> Suite:
         fs.write("stats.py", re.sub(r"COUNT = \d+", f"COUNT = {value + 1}", text, count=1))
     tasks = [EvalTask(i, "In stats.py the line `COUNT = <number>` holds a counter. Increase that number by exactly 1 "
                          "(read the current value first and write the value plus one). Change nothing else.",
-                      (f"{i}.marker",), edit, ("stats.py",)) for i in _ids(n)]
+                      (f"{i}.marker",), edit, ("stats.py",),
+                      accept=({"kind": "increases", "path": "stats.py", "pattern": r"COUNT = (\d+)", "by": 1},))
+             for i in _ids(n)]
     probe = ("import json, stats\nprint(json.dumps({'count': stats.COUNT}))")
     return Suite("counter", f"{n} tasks each add 1 to the same line; the right answer is {n}", files, tasks,
                  "import stats; assert isinstance(stats.COUNT, int) and stats.total() == stats.COUNT", probe,
@@ -100,7 +105,11 @@ def shared(n: int = 5) -> Suite:
         tasks.append(EvalTask(f"t{i}", f"Append to the end of handlers.py a function handle_{name}(x) that returns "
                                        f"x * {i + 1}, then on its own line directly below it the line "
                                        f"REGISTRY[\"{name}\"] = handle_{name}. Keep all existing code.",
-                              (f"{name}.marker",), edit, ("handlers.py",)))
+                              (f"{name}.marker",), edit, ("handlers.py",),
+                              accept=({"kind": "contains", "path": "handlers.py", "text": f"def handle_{name}(x):"},
+                                      {"kind": "contains", "path": "handlers.py",
+                                       "text": f'REGISTRY["{name}"] = handle_{name}'}),
+                              merge=(("handlers.py", "append"),)))
     probe = ("import json, handlers\nr={}\n" + "".join(
         f"r['t{i}']=handlers.REGISTRY.get('h{i}', lambda x: None)(3)=={3 * (i + 1)}\n" for i in range(1, n + 1))
         + "print(json.dumps(r))")
@@ -122,10 +131,13 @@ def semantic() -> Suite:
         fs.write("report.py", "from geometry import area\n\n\ndef summary(w, h):\n"
                               "    return f\"area={area(w, h)}\"\n")
     tasks = [EvalTask("t1", "Rename the function area in geometry.py to rect_area, and update app.py so that it still "
-                            "works.", ("geometry.py", "app.py"), rename, ("geometry.py", "app.py")),
+                            "works.", ("geometry.py", "app.py"), rename, ("geometry.py", "app.py"),
+                      accept=({"kind": "contains", "path": "geometry.py", "text": "def rect_area("},
+                              {"kind": "absent", "path": "geometry.py", "text": "def area("})),
              EvalTask("t2", "Create report.py with a function summary(w, h) that returns the string "
                             "f\"area={...}\" where ... is the result of the function from geometry.py that "
-                            "computes the area of a w by h rectangle.", ("report.py",), report, ("report.py", "geometry.py"))]
+                            "computes the area of a w by h rectangle.", ("report.py",), report, ("report.py", "geometry.py"),
+                      accept=({"kind": "exists", "path": "report.py"},))]
     probe = ("import json\nr={}\ntry:\n    import geometry, app\n    r['t1']=hasattr(geometry,'rect_area') and app.main()==6\n"
              "except Exception:\n    r['t1']=False\ntry:\n    import report\n    r['t2']=report.summary(2,3)=='area=6'\n"
              "except Exception:\n    r['t2']=False\nprint(json.dumps(r))")

@@ -112,6 +112,89 @@ runs, and 0 or 1 left most tasks for a person. The failure is always an escalati
 Fork + merge scales like the unprotected baseline (6.0x with 8 at once) and costs about 5% more than
 writing into a shared folder, which is the price of branches, merging and validation.
 
+## Isolation levels and the serializability checker (1.1, perfect agents, 10 runs per cell)
+
+![Runs equivalent to a serial execution, by isolation level](levels.svg)
+
+The strategies are now named levels of one scale (doc 12, section 2.1), and every run is checked for **serializability**:
+is the final tree what executing the landed tasks one after another, in landing order, would give (and if not, does
+some other order)? `gitlike` is what a branch, a pull request and CI do: text merge, merged result validated, reads not
+checked. `+ checks` adds the survival check and each task's transition checks (zero model tokens). Redo budget 6.
+
+| suite | strategy | all correct | lost updates | serializable | conflicts on first try | seconds |
+|---|---|---|---|---|---|---|
+| counter | shared folder (`naive`) | 0/10 | 3.3 | **0/10** | 0.0 | 0.52 |
+| counter | `gitlike` | 0/10 | 2.8 | **0/10** | 0.2 | 0.60 |
+| counter | `forkmerge` (1.0: + read set) | 10/10 | 0.0 | 10/10 | 3.5 | 1.55 |
+| counter | `gitlike-checks` (no read set, transition checks) | 10/10 | 0.0 | 10/10 | 3.4 | 1.55 |
+| counter | `serializable` | 10/10 | 0.0 | 10/10 | 3.7 | 1.56 |
+| shared | shared folder | 0/10 | 3.3 | 0/10 | 0.0 | 0.52 |
+| shared | `gitlike` | 10/10 | 0.0 | 10/10 | 3.6 | 1.55 |
+| shared | `forkmerge` / `serializable` | 10/10 | 0.0 | 10/10 | 3.4 / 3.5 | 1.55 |
+| shared | `serializable-append` (file declared `append`) | 10/10 | 0.0 | 10/10 | **0.0** | **0.55** |
+| disjoint | every level | 10/10 | 0.0 | 10/10 | 0.0 | 0.41 |
+| semantic | every fork level | 0/10 | 0.0 | 10/10 | 1.0 | 2.3 |
+
+What this shows:
+
+* **The counter is the case git-style merging cannot see.** Five agents each turn `COUNT = 0` into `COUNT = 1`: the
+  merges are clean, validation passes, and only one increment is in the result. `gitlike` ends *not serializable in
+  10 of 10 runs* (2.8 of 5 increments lost per run). Adding the read set (1.0) makes it 10/10; adding **only a
+  one-line transition check** (`increases` by 1, no read set at all) also makes it 10/10, refusing each identical edit
+  with no model tokens.
+* On `shared` (appends to one file) `gitlike` is already serializable: appends commute, and the cost is the
+  collisions (3.6 per run, each redone). Declaring the file `append` removes them: **0 collisions, 0.55 s instead of
+  1.55 s**, same final tree, still serializable.
+* `semantic` is serializable at every level (the broken program *is* what the serial replay gives, because the second task
+  was written against the old name). Serializability is a statement about consistency of concurrent execution, not
+  about whether the tasks were right; the validator is what keeps that program out of `main`.
+* The shared folder is not serializable on `counter` or `shared` (10 of 10 runs: updates lost).
+
+Demo with real MCP processes: with `registry.py` and `CHANGELOG.md` declared `append`, the ten-task board needs **0
+syncs instead of 24**, with the same checked result, also under `--chaos`.
+
+### The same levels with a real model (`eco`, 9B, 3 runs per cell, redo budget 5)
+
+| suite | strategy | all correct | lost updates | conflicts on first try | seconds | tokens |
+|---|---|---|---|---|---|---|
+| counter | `gitlike` | **0/3** | **3.0** | 0.0 | 8.1 | 18127 |
+| counter | `forkmerge` | 3/3 | 0.0 | 3.0 | 20.1 | 18911 |
+| counter | `serializable` | 3/3 | 0.0 | 3.7 | 20.8 | 18002 |
+| shared | `gitlike` / `forkmerge` / `serializable` | 3/3 each | 0.0 | 3.0 / 3.3 / 3.7 | 27.2 / 29.8 / 27.1 | about 26000 |
+| shared | `serializable-append` | 3/3 | 0.0 | **0.0** | **9.4** | 25496 |
+| semantic | `gitlike` / `forkmerge` | 2/3 each | 0.0 | 1.0 | 16.6 / 22.2 | about 10400 |
+| semantic | `serializable` | 0/3 | 0.0 | 1.0 | 31.0 | 12265 |
+| semantic | `serializable-append` | 1/3 | 0.0 | 1.0 | 28.3 | 12663 |
+
+The pattern of the perfect agents repeats with a model: the git-like level loses 3 of 5 increments in every `counter`
+run with nothing failing; every level with a read set or a transition check loses none; declaring `append` takes the
+`shared` runs from about 3 collisions to none and from 27 s to 9 s at the same token count (the collisions were pure
+overhead). **One result went the other way and was followed up (next section). The `semantic` row for `serializable` (0/3) was not a
+bug in the checks; see below.
+
+### Following up: telling the agent its checks hurt a small model (`semantic`, 8 runs per cell, redo budget 5)
+
+In the first eco runs, `serializable` finished `semantic` in 0 of 3 runs against 2 of 3 for `forkmerge`. Reading the
+records showed that every refusal came from the *validator* (`import report` failing: the redo renamed `area` in the two
+files it was told about and left `report.py`, written by the other task, on the old name) and **not one from an
+acceptance check**. The difference between the levels was that `serializable` also wrote the task's conditions
+("`geometry.py` does not contain `def area(`") into the agent's prompt. A control, `serializable-quiet` (checks enforced,
+prompt unchanged), separated the two causes:
+
+| model | `forkmerge` | `serializable` (conditions in the prompt) | `serializable-quiet` (enforced only) |
+|---|---|---|---|
+| `eco` 9B | 4/8 all correct, 29 validator refusals, 10950 tokens | **1/8**, 39 refusals, 12186 tokens | 5/8, 29 refusals, 10768 tokens |
+| `quality` 27B | 8/8, 7746 tokens | 8/8, 7855 tokens | 8/8, 7556 tokens |
+
+With the checks enforced but not announced, `eco` does as well as without checks (5/8 against 4/8); announcing them
+cost it work (1/8). The likely mechanism is anchoring: told what will be checked in two files, the model stops looking
+at the third. The 27B model is not affected. Eight runs per cell is a small sample, and quality's seconds in this table
+are not comparable (the first rows ran while another model was using the GPU), but the direction was clear enough to
+change the default: **the conditions are no longer written into the worker's prompt** (`worker.TELL_CHECKS = False`;
+the evaluation strategy `serializable-told` switches it on). The MCP `claim_task` result still lists them for an agent that
+wants to know. Zero acceptance refusals occurred in any of these runs: on `semantic` the checks are satisfied by correct
+work and the failures are the validator's, as in 1.0.
+
 ## Results with a real model (`eco`, 9B, 3 runs per cell)
 
 | tag | suite | strategy | runs | all correct | tasks satisfied | lost updates | main broken | conflicts | human escalations | seconds | tokens |

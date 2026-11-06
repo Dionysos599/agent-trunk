@@ -206,6 +206,49 @@ At every step the merged result must pass your validator, and a resolution that 
 side, a branch that changed nothing although the agent said "done", and files an agent changed without
 reading are all treated as failures to retry, not as success.
 
+### Telling the system what your edits mean
+
+Plain text cannot say whether two edits to a file are independent, so by default the system is careful: a file an
+agent read and that someone else changed since is *stale* and the landing waits. Two optional declarations let you say
+more, and each only ever relaxes or adds a check for the files you name.
+
+**Merge policies.** A file `.agenttrunk-merge` at the project root (read from `main`, so an agent cannot relax its own
+landing) lists a pattern and a policy per line; a task can also declare `"merge": {"registry.py": "append"}`.
+
+```
+registry.py   append       # lines added at the same place by several agents are all kept, in landing order
+CHANGELOG.md  append
+*.md          converge     # identical edits are agreement
+```
+
+| policy | meaning |
+|---|---|
+| `relative` (default) | an edit may depend on what the agent read: stale reads are refused |
+| `converge` | identical edits are agreement; reads of this file are not validated |
+| `append` | pure insertions at the same place commute; both sides' lines are kept. A modified or deleted line is still a conflict |
+
+`append` is for files where order does not matter (a registry, a changelog). Do not use it for numbered migrations or
+ids handed out in sequence. In the ten-task demo, declaring the two shared files `append` takes the number of syncs from
+24 to 0 (`python3 examples/mcp-demo/simulate.py --append`).
+
+**Acceptance checks.** A task can say what must be true *because it landed*, compared with `main` immediately before
+the landing:
+
+```json
+{"id": "count", "description": "Increase COUNT by one", "paths": ["stats.py"],
+ "accept": [{"kind": "increases", "path": "stats.py", "pattern": "COUNT = (\\d+)", "by": 1},
+            {"kind": "contains", "path": "registry.py", "text": "REGISTRY['count']"}]}
+```
+
+Kinds: `contains`, `absent`, `increases`, `decreases`, `exists`, `missing`, `command` (runs without a shell, in a folder
+holding the result; optionally also compares a number in its output between the old and the new tree). The checks are
+validated strictly when the task is declared, they cost no model tokens, and a failure is reported to the agent as
+`rejected` with the reason. `agenttrunk board` warns about a check that already passes on the current `main` (it could
+not show that the task did its work).
+
+Independently of any declaration, a landing is also refused when lines that either side *added or removed on purpose*
+did not survive the merge (for example a merger agent that keeps one side).
+
 ### Surviving crashes
 
 * Tool calls carry sequence numbers and run once; a retried call returns the recorded answer.

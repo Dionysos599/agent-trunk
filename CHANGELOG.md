@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased (toward 1.1.0)
+
+The first three steps of the 1.1 update (`docs/design/12-update-consistency-and-efficiency.md`): the strategies of the
+evaluation become named isolation levels with a checker, files can declare how concurrent edits combine, and a landing
+is checked for lost work without spending a model token.
+
+* **Isolation levels and a serializability checker** (`serial.py`, `MergeQueue(isolation="snapshot" | "gitlike")`): the
+  final `main` is compared with the serial replay of the landed tasks in landing order, and with every other order when it
+  differs. `gitlike` (text merge + validation, no read set) is the baseline the evaluation compares against; the results
+  tables have a `serializable` column.
+* **Merge policies** (`policy.py`): `relative` (default), `converge`, `append`, declared per file in `.agenttrunk-merge`
+  (read from `main`) or in a task's `"merge"`. `agenttrunk`'s ten-task demo needs 0 syncs instead of 24 with the two
+  shared files declared `append` (`simulate.py --append`).
+* **Survival check** (`survival.py`): lines either side added or removed on purpose must survive a merge; catches a merger
+  that keeps one side, and an agent that drops main's lines while resolving a conflict (MCP `submit_task` answers
+  `rejected`).
+* **Transition checks** (`checks.py`): a task's `"accept"` list (`contains`, `absent`, `increases`, `decreases`,
+  `exists`, `missing`, `command`) is checked against `main` immediately before the landing; strictly validated when the
+  task is declared; `agenttrunk board` warns about checks that already pass. The identical-edit counter is refused with no
+  model tokens.
+* `textmerge.hunks` trims lines the two texts share at both ends before diffing (long files with a small edit: about 40 ms
+  for 60,000 lines); `DirFS.write` in the evaluation harness replaces files atomically.
+
 ## 1.0.0
 
 The first complete version: a strongly consistent shared trunk for several AI agents, from the replicated store

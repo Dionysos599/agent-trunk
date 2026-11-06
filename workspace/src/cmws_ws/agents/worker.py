@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
+from ..checks import Check
+from ..policy import Rule
 from ..repo import NoSuchWorkspace, Repository
 from ..sync import Checkout
 from .llm import ChatModel, ModelError
@@ -34,6 +36,8 @@ class Task:
     paths: Tuple[str, ...] = ()        # files or folders the task is expected to touch
     context: str = ""                  # extra material the planner chose to hand over
     depends_on: Tuple[str, ...] = ()   # tasks that must have landed before this one starts
+    merge: Tuple[Rule, ...] = ()       # (pattern, policy) merge rules for this task's landing (policy.py)
+    accept: Tuple[Check, ...] = ()     # transition checks that must hold because this task landed (checks.py)
 
 
 @dataclass
@@ -69,12 +73,18 @@ def run_task(worker: Worker, repo: Repository, task: Task, agent_id: Optional[st
     return worker.run(task, repo, agent_id)
 
 
+TELL_CHECKS = False           # put the task's acceptance conditions into the prompt. Off by default: with a 9B model it narrowed
+                              # the agent's attention to the checked files and cost it work (docs/eval/results.md)
+
+
 def task_prompt(task: Task) -> str:
     parts = [f"Task: {task.description.strip()}"]
     if task.paths:
         parts.append("You are expected to change only: " + ", ".join(task.paths)
                      + ". Other agents are working on other parts of the project at the same time; "
                        "do not edit files outside this area.")
+    if task.accept and TELL_CHECKS:
+        parts.append("Your change is accepted only if: " + "; ".join(c.describe() for c in task.accept) + ".")
     if task.context.strip():
         parts.append("Background:\n" + task.context.strip())
     return "\n\n".join(parts)

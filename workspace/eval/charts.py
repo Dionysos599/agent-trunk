@@ -9,6 +9,7 @@ Reads the recorded runs in workspace/eval/results/*.jsonl and writes one SVG per
   redo-budget.svg     share of runs in which every task landed, by redo budget
   mixed-agents.svg    updates lost per run with a local model plus the claude command line, before and after
                       each of the three fixes
+  levels.svg          share of runs that are equivalent to a serial execution, by isolation level (perfect agents)
 """
 
 from __future__ import annotations
@@ -189,6 +190,26 @@ def fig_mixed() -> str:
                      "Fork + merge queue, 3 runs per bar, 5 tasks; each step fixes how work was lost in the run before", groups, series, "updates lost per run")
 
 
+LEVELS = [("naive", "shared folder"), ("gitlike", "git-like"), ("forkmerge", "+ read set (1.0)"),
+          ("gitlike-checks", "git-like + checks"), ("serializable", "+ read set + checks")]
+
+
+def fig_levels(rows: List[dict]) -> str:
+    """Per isolation level and suite: the share of runs whose final tree some serial execution explains."""
+    suites = [s for s in ("counter", "shared", "disjoint") if any(r["suite"] == s for r in rows)]
+    series = {}
+    for strat, label in LEVELS:
+        vals = []
+        for s in suites:
+            sel = [r for r in rows if r["suite"] == s and r["strategy"] == strat and r.get("serializable") is not None]
+            vals.append(100.0 * sum(1 for r in sel if r["serializable"]) / len(sel) if sel else 0.0)
+        series[label] = vals
+    runs = max((len([r for r in rows if r["suite"] == suites[0] and r["strategy"] == "naive"]) if suites else 0), 0)
+    return bar_chart("Runs equivalent to a serial execution, by isolation level",
+                     f"Perfect agents, {runs} runs per bar; counter has 5 tasks that each add 1 to one line (higher is better)",
+                     suites, series, "runs that are serializable (%)", fmt="{:.0f}%", ymax=100)
+
+
 def main(out: Path) -> List[Path]:
     out.mkdir(parents=True, exist_ok=True)
     figs = {
@@ -197,6 +218,9 @@ def main(out: Path) -> List[Path]:
         "redo-budget.svg": fig_redo(load("oracle_redos.jsonl")),
         "mixed-agents.svg": fig_mixed(),
     }
+    levels = load("oracle_levels.jsonl")
+    if levels:
+        figs["levels.svg"] = fig_levels(levels)
     paths = []
     for name, svg in figs.items():
         p = out / name

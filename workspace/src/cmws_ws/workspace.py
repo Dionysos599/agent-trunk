@@ -354,7 +354,7 @@ class Workspace:
 
     # ---- catching up with upstream -------------------------------------------------------
 
-    def sync(self) -> SyncResult:
+    def sync(self, task_rules=()) -> SyncResult:
         """Bring upstream (main) into this workspace: fetch + merge.
 
         On success the workspace's fork base moves to the upstream head, and the read record is
@@ -367,11 +367,12 @@ class Workspace:
         upstream = self.repo.head()
         if upstream == self.fork_base or upstream in ancestors(self.store, self.head):
             return SyncResult("up-to-date")
-        stale = self.repo.stale_reads(self, upstream)
+        policy = self.repo.policy_table(upstream, task_rules)
+        stale = self.repo.stale_reads(self, upstream, policy)
         if is_ancestor(self.store, self.head, upstream):
             self._adopt(upstream, upstream)
             return SyncResult("fast-forward", upstream, stale_reads=stale)
-        merged = self.repo.merge_into(self.head, upstream, f"ws/{self.agent_id}", "main")
+        merged = self.repo.merge_into(self.head, upstream, f"ws/{self.agent_id}", "main", policy=policy)
         if not merged.clean:
             return SyncResult("conflict", conflicts=merged.conflicts, stale_reads=stale)
         cid = self.store.put_commit(Commit(

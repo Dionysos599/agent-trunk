@@ -5,6 +5,11 @@
 * a hunk made by only one side is applied;
 * hunks that overlap or touch (like git, adjacent edits are not trusted to be independent) become
   a conflict unless both sides replaced the region with identical lines.
+
+With ``append=True`` one more case is resolved instead of reported: a place where *both* sides only inserted
+lines and neither changed or removed a line of the base (two agents adding to the end of a file). Both
+insertions are kept, ``theirs`` first (it is the side already on main, so landing order is kept), and a
+first block that lacks its final newline gets one so that two lines never run together.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ class ConflictRegion:
 class MergeResult:
     lines: List[str]  # merged text; conflicting regions are rendered with markers
     conflicts: List[ConflictRegion]
+    appended: int = 0  # places where two pure insertions were both kept (``append`` policy)
 
     @property
     def clean(self) -> bool:
@@ -48,8 +54,20 @@ def split_lines(text: str) -> List[str]:
 
 
 def hunks(base: Sequence[str], side: Sequence[str]) -> List[Hunk]:
-    sm = difflib.SequenceMatcher(None, base, side, autojunk=False)
-    return [Hunk(i1, i2, tuple(side[j1:j2]))
+    # Lines the two texts share at the start and at the end cannot be part of a change, and cutting them off first
+    # keeps the quadratic worst case of the matcher (long runs of identical lines) to the part that really differs.
+    n = min(len(base), len(side))
+    head = 0
+    while head < n and base[head] == side[head]:
+        head += 1
+    tail = 0
+    while tail < n - head and base[len(base) - 1 - tail] == side[len(side) - 1 - tail]:
+        tail += 1
+    a, b = base[head:len(base) - tail], side[head:len(side) - tail]
+    if not a and not b:
+        return []
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return [Hunk(head + i1, head + i2, tuple(b[j1:j2]))
             for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != "equal"]
 
 
@@ -76,11 +94,19 @@ def _marker_block(c: ConflictRegion, ours_label: str, theirs_label: str) -> List
             + [f">>>>>>> {theirs_label}\n"])
 
 
+def _terminated(lines: Sequence[str]) -> List[str]:
+    lines = list(lines)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    return lines
+
+
 def merge3(base: Sequence[str], ours: Sequence[str], theirs: Sequence[str],
-           ours_label: str = "ours", theirs_label: str = "theirs") -> MergeResult:
+           ours_label: str = "ours", theirs_label: str = "theirs", append: bool = False) -> MergeResult:
     a, b = hunks(base, ours), hunks(base, theirs)
     out: List[str] = []
     conflicts: List[ConflictRegion] = []
+    appended = 0
     pos = 0
     i = j = 0
     while i < len(a) or j < len(b):
@@ -112,13 +138,16 @@ def merge3(base: Sequence[str], ours: Sequence[str], theirs: Sequence[str],
             mine, yours = _apply(base, lo, hi, ca), _apply(base, lo, hi, cb)
             if mine == yours:
                 out.extend(mine)
+            elif append and all(h.start == h.end for h in ca + cb):
+                out.extend(_terminated(yours) + list(mine))      # two pure insertions at one place: keep both
+                appended += 1
             else:
                 region = ConflictRegion(tuple(base[lo:hi]), mine, yours, lo)
                 conflicts.append(region)
                 out.extend(_marker_block(region, ours_label, theirs_label))
     out.extend(base[pos:])
-    return MergeResult(out, conflicts)
+    return MergeResult(out, conflicts, appended)
 
 
-def merge_text(base: Optional[str], ours: str, theirs: str, **labels: str) -> MergeResult:
-    return merge3(split_lines(base or ""), split_lines(ours), split_lines(theirs), **labels)
+def merge_text(base: Optional[str], ours: str, theirs: str, **options) -> MergeResult:
+    return merge3(split_lines(base or ""), split_lines(ours), split_lines(theirs), **options)

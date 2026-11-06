@@ -21,9 +21,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from .. import kvdoc
+from ..checks import check_to_dict, parse_checks
 from ..claims import TaskClaims
 from ..kv import KV
 from ..leases import LeaseTable, leases_for
+from ..policy import rules_from_declaration, rules_to_declaration
 from ..repo import Repository
 from .graph import InvalidGraph, TaskGraph
 from .mergequeue import MergeQueue
@@ -33,13 +35,19 @@ from .worker import Task, Worker
 
 
 def task_to_dict(t: Task) -> dict:
-    return {"id": t.id, "description": t.description, "paths": list(t.paths), "context": t.context,
-            "depends_on": list(t.depends_on)}
+    d = {"id": t.id, "description": t.description, "paths": list(t.paths), "context": t.context,
+         "depends_on": list(t.depends_on)}
+    if t.merge:
+        d["merge"] = rules_to_declaration(t.merge)
+    if t.accept:
+        d["accept"] = [check_to_dict(c) for c in t.accept]
+    return d
 
 
 def task_from_dict(d: dict) -> Task:
+    """A task from its JSON form; ``merge`` and ``accept`` are validated (``PolicyError`` / ``CheckError``)."""
     return Task(d["id"], d["description"], tuple(d.get("paths", ())), d.get("context", ""),
-                tuple(d.get("depends_on", ())))
+                tuple(d.get("depends_on", ())), rules_from_declaration(d.get("merge")), parse_checks(d.get("accept")))
 
 
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,31}$")
@@ -52,7 +60,7 @@ def agent_id(run_id: str, task_id: str) -> str:
 
 def namespaced(run_id: str, graph: TaskGraph) -> TaskGraph:
     return TaskGraph([Task(agent_id(run_id, t.id), t.description, t.paths, t.context,
-                           tuple(agent_id(run_id, d) for d in t.depends_on)) for t in graph.tasks])
+                           tuple(agent_id(run_id, d) for d in t.depends_on), t.merge, t.accept) for t in graph.tasks])
 
 
 def plan_key(run_id: str) -> str:

@@ -383,6 +383,37 @@ class GatewayIntegrationTest(unittest.TestCase):
                 for pr in procs.values():
                     pr.close()
 
+    def test_the_agenttrunk_command_warns_about_checks_that_cannot_fail_and_refuses_bad_declarations(self):
+        import tempfile
+        from pathlib import Path
+        tag = f"{time.time_ns()}"
+        name, board = f"main-{tag}", f"cw{tag}"[:32]
+        Repository.init(self.kv(), {"a.py": b"x = 1\n", ".agenttrunk-merge": b"a.py append\nnonsense\n"}, main=name)
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([SRC, ROOT]), AGENTTRUNK_URL=self.base)
+        wrapper = os.path.join(ROOT, "bin", "agenttrunk")
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "good.json"
+            good.write_text(json.dumps([{"id": "one", "description": "x", "paths": ["a.py"], "merge": {"a.py": "append"},
+                                         "accept": [{"kind": "contains", "path": "a.py", "text": "x = 1"}]}]))
+            r = subprocess.run([wrapper, "--main", name, "board", board, "--tasks", str(good)], env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("board created", r.stdout)
+            self.assertIn("warning: task one:", r.stderr)
+            self.assertIn("already true", r.stderr)
+            self.assertIn("warning: .agenttrunk-merge:", r.stderr)
+            bad = Path(tmp) / "bad.json"
+            bad.write_text(json.dumps([{"id": "one", "description": "x", "accept": [{"kind": "increases", "path": "a.py"}]}]))
+            r = subprocess.run([wrapper, "--main", name, "board", board + "b", "--tasks", str(bad)], env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("accept[0]", r.stderr)
+            bad.write_text(json.dumps([{"id": "one", "description": "x", "merge": {"a.py": "sometimes"}}]))
+            r = subprocess.run([wrapper, "--main", name, "board", board + "c", "--tasks", str(bad)], env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("sometimes", r.stderr)
+
     def test_the_agenttrunk_command_creates_and_shows_a_board(self):
         import tempfile
         from pathlib import Path
@@ -430,6 +461,14 @@ class GatewayIntegrationTest(unittest.TestCase):
                          "10/10 tasks landed", "ALL DONE"):
             self.assertIn(expected, chaos.stdout)
         self.admin("revive", "server1-1")                                              # in case the script was cut short
+        self.admin("revive", "server2-2")
+        appended = subprocess.run([sys.executable, os.path.join(demo, "simulate.py"), "--agents", "4", "--append", "--chaos",
+                                   "--url", self.base], env=env, capture_output=True, text=True, timeout=170)
+        self.assertEqual(appended.returncode, 0, appended.stdout[-1500:] + appended.stderr[-500:])
+        self.assertIn("[append on]", appended.stdout)
+        self.assertIn("ALL DONE", appended.stdout)
+        self.assertIn("had to sync 0 time(s)", appended.stdout)                        # declared `append`: nothing collides, even under chaos
+        self.admin("revive", "server1-1")
         self.admin("revive", "server2-2")
         name = f"demo{time.time_ns()}"[:30]
         try:
