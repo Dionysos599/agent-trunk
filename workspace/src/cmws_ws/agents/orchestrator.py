@@ -28,6 +28,7 @@ from ..leases import LeaseTable, leases_for
 from ..policy import rules_from_declaration, rules_to_declaration
 from ..repo import Repository
 from .graph import InvalidGraph, TaskGraph
+from .ladder import validate_layers
 from .mergequeue import MergeQueue
 from .planner import Planner
 from .scheduler import DONE, RunReport, Scheduler
@@ -41,13 +42,16 @@ def task_to_dict(t: Task) -> dict:
         d["merge"] = rules_to_declaration(t.merge)
     if t.accept:
         d["accept"] = [check_to_dict(c) for c in t.accept]
+    if t.layers is not None:
+        d["layers"] = list(t.layers)
     return d
 
 
 def task_from_dict(d: dict) -> Task:
     """A task from its JSON form; ``merge`` and ``accept`` are validated (``PolicyError`` / ``CheckError``)."""
     return Task(d["id"], d["description"], tuple(d.get("paths", ())), d.get("context", ""),
-                tuple(d.get("depends_on", ())), rules_from_declaration(d.get("merge")), parse_checks(d.get("accept")))
+                tuple(d.get("depends_on", ())), rules_from_declaration(d.get("merge")), parse_checks(d.get("accept")),
+                validate_layers(d.get("layers")))
 
 
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,31}$")
@@ -60,7 +64,7 @@ def agent_id(run_id: str, task_id: str) -> str:
 
 def namespaced(run_id: str, graph: TaskGraph) -> TaskGraph:
     return TaskGraph([Task(agent_id(run_id, t.id), t.description, t.paths, t.context,
-                           tuple(agent_id(run_id, d) for d in t.depends_on), t.merge, t.accept) for t in graph.tasks])
+                           tuple(agent_id(run_id, d) for d in t.depends_on), t.merge, t.accept, t.layers) for t in graph.tasks])
 
 
 def plan_key(run_id: str) -> str:

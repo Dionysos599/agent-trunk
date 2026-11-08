@@ -195,6 +195,68 @@ the evaluation strategy `serializable-told` switches it on). The MCP `claim_task
 wants to know. Zero acceptance refusals occurred in any of these runs: on `semantic` the checks are satisfied by correct
 work and the failures are the validator's, as in 1.0.
 
+## The cost ladder (1.1, layers 2 and 3)
+
+The first table is the **mechanism** with perfect agents (an oracle answers "re-apply and compare" by applying the
+suite's own edit to main's file); the token savings with real models follow it.
+
+| suite (10 runs, redo budget 6) | ladder | all correct | serializable | tasks landed by redo | tasks landed by re-apply | seconds |
+|---|---|---|---|---|---|---|
+| counter | layer 4 only (1.0) | 10/10 | 10/10 | 3.6 | 0 | 1.54 |
+| counter | layers 2 + 4 | 10/10 | 10/10 | **0** | **4.0** | **0.55** |
+| shared | layer 4 only | 10/10 | 10/10 | 3.6 | 0 | 1.54 |
+| shared | layers 2 + 4 | 10/10 | 10/10 | **0** | **4.0** | **0.55** |
+| semantic | layer 4 only | 0/10 | 10/10 | 0 | 0 | 2.31 |
+| semantic | layers 2 + 4 | 0/10 | 10/10 | 0 | 0 | 2.31 |
+
+With a layer-2 answerer, **every collision on `counter` and `shared` (4 per run) was settled by one short exchange
+instead of a redo of the whole task**, nothing was lost, every run stays serializable, and the run takes a third of the
+time (the oracle's redo costs its 0.3 s of "thinking"; layer 2 costs none here). On `semantic` the layer does not engage
+and the result is identical: the edit touches several files, the oracle cannot answer for one, and the queue steps
+aside to layer 4 as designed. The tests show the other side of the trade: a model that wrongly answers "already done"
+loses the increment when the task declares no check, and is refused when it declares `increases`.
+
+### With real models (`eco` 9B and `quality` 27B through Ollama, 4 runs per cell, redo budget 4)
+
+`counter` and `shared`, five tasks racing for the same file; every run ended with every task landed, 0 lost updates.
+"tokens" are the model's own counts for everything in the run (the agents, the redos, layer 2). Layer 2's question is
+asked with thinking switched off (`reasoning_effort: none`): with it on, `eco` spent its whole 4096-token budget thinking
+and returned nothing for the longer file (12 of 19 answers on `shared`).
+
+| model | suite | redo only (1.0) | + layer 2 | layer 3 instead of 2 |
+|---|---|---|---|---|
+| `eco` | counter | 57,411 tok, 28 s | **20,232 tok (-65%)**, 9 s | 60,600 tok, 26 s |
+| `eco` | shared | 64,081 tok, 31 s | **29,077 tok (-55%)**, 13 s | 74,225 tok, 33 s |
+| `quality` | counter | 60,280 tok, 42 s | **22,062 tok (-63%)**, 17 s | 52,030 tok, 75 s |
+| `quality` | shared | 61,791 tok, 49 s | **27,121 tok (-56%)**, 24 s | 69,318 tok, 46 s |
+
+* **Layer 2 paid off on both models and both suites**: it settled all 4 collisions of every run (no redo, no layer 3,
+  no escalation), the answers cost about 250 to 500 tokens per collision (1,000 to 2,200 per run), and total tokens
+  fell by 55 to 65% with the run finishing 2 to 3 times faster. Zero updates lost, every task landed, so the checks
+  that guard its answers did not have to refuse anything here.
+* About a quarter to a third of the re-applications landed `stale` again because another task had moved `main` while
+  the model answered; the queue followed `main` (up to 3 times) and every task still settled at layer 2.
+* **Layer 3 did not pay off on these workloads.** Used alone it settled 0 to 0.5 of the 3 continuations tried per run
+  and then fell through to the redo, so its tokens were spent on top of the redo's: -14% on `quality` counter, but +6%
+  to +16% on the others. The continuation resumes a long conversation and lands `stale` again for the same reason
+  (a hot spot moves while it works), and it carries no retry of its own. It stays off by default and is not
+  recommended until it is improved (a retry like layer 2's, or limiting it to conflicts that need the agent's own
+  context rather than hot-spot races).
+* Cost of the whole ladder when it does not help: nothing is lost, but a layer that does not settle adds tokens.
+
+Not yet measured: Claude. The probe on `claude -p` answered both questions correctly 5 of 5 on all four cases (a strong
+model does not need the re-apply form), and each call costs about 26,000 tokens of fixed overhead of the command line
+itself, which hides the difference; the runs against Claude hit the 5-hour usage limit and were discarded. To redo them
+use `--bare` or count output tokens only, and run from your own terminal:
+
+```bash
+PYTHONPATH=workspace/src python3 workspace/eval/run_eval.py --suites counter,shared --strategies serializable \
+    --backends claude --reps 5 --max-redos 4 --reapply none --tag claude-redo --out workspace/eval/results/claude_ladder.jsonl
+PYTHONPATH=workspace/src python3 workspace/eval/run_eval.py --suites counter,shared --strategies serializable \
+    --backends claude --reps 5 --max-redos 4 --reapply claude --tag claude-layer2 --out workspace/eval/results/claude_ladder.jsonl
+python3 workspace/eval/report.py workspace/eval/results/claude_ladder.jsonl
+```
+
 ## Results with a real model (`eco`, 9B, 3 runs per cell)
 
 | tag | suite | strategy | runs | all correct | tasks satisfied | lost updates | main broken | conflicts | human escalations | seconds | tokens |

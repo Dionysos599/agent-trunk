@@ -152,7 +152,27 @@ def _orchestrate(a, repo: Repository) -> int:
     if a.escalate and a.model:
         from .agents import merger_worker
         merger, redo = merger_worker(_model(a)), worker      # the same model resolves conflicts and redoes tasks
-    queue = MergeQueue(repo, validator=validator, merger=merger, redo_worker=redo)
+    reapply = None
+    if a.reapply:
+        from .agents.ladder import ModelReapplier
+        from .agents.llm import CliModel
+        if a.reapply == "claude":
+            reapply = ModelReapplier(CliModel())
+        elif a.model:
+            quiet = _model(a)
+            quiet.extra["reasoning_effort"] = "none"          # a one-answer question: no thinking budget to run out of
+            reapply = ModelReapplier(quiet)
+        else:
+            print("--reapply model needs --model", file=sys.stderr)
+            return 2
+    try:
+        layers = [int(x) for x in a.layers.split(",") if x.strip()]
+        queue = MergeQueue(repo, validator=validator, merger=merger, redo_worker=redo, reapply=reapply,
+                           continue_worker=worker if (redo is not None and isinstance(worker, LoopWorker)) else None,
+                           layers=layers)
+    except ValueError as e:
+        print(f"--layers: {e}", file=sys.stderr)
+        return 2
     orch = Orchestrator(repo, worker, planner=planner, queue=queue, owner=a.owner, parallel=a.parallel,
                         claim_ttl=a.claim_ttl)
     try:
@@ -221,6 +241,13 @@ def _main(argv=None) -> int:
     p.add_argument("--validate-cmd", help="command run on the merged tree before main moves (exit 0 = accept)")
     p.add_argument("--escalate", action="store_true",
                    help="when a branch cannot land, let the model resolve the conflict, then redo the task")
+    p.add_argument("--reapply", choices=["model", "claude"],
+                   help="cost ladder layer 2: when a file both the agent and main changed went stale, ask what it would be "
+                        "if the task were done again on main (the model of --model, or `claude -p`) and let a program compare; "
+                        "needs --escalate for the rest of the ladder")
+    p.add_argument("--layers", default="2,3,4",
+                   help="which ladder layers may be used (2 re-apply, 3 continue the agent's conversation, 4 redo); "
+                        "a layer also needs what it runs on: --reapply for 2, --escalate with --model for 3 and 4")
     p.add_argument("--parallel", type=int, default=4)
     p.add_argument("--claim-ttl", type=float, default=300.0,
                    help="seconds a dead orchestrator's tasks stay claimed before another run may take them over")

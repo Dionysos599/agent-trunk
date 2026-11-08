@@ -22,7 +22,7 @@ from ..checks import Check
 from ..policy import Rule
 from ..repo import NoSuchWorkspace, Repository
 from ..sync import Checkout
-from .llm import ChatModel, ModelError
+from .llm import ChatModel, ModelError, parse_cli_output
 from .session import Session
 from .tools import Toolbox
 
@@ -38,6 +38,7 @@ class Task:
     depends_on: Tuple[str, ...] = ()   # tasks that must have landed before this one starts
     merge: Tuple[Rule, ...] = ()       # (pattern, policy) merge rules for this task's landing (policy.py)
     accept: Tuple[Check, ...] = ()     # transition checks that must hold because this task landed (checks.py)
+    layers: Optional[Tuple[int, ...]] = None   # which cost-ladder layers (2, 3, 4) may settle this task; None: the queue's choice
 
 
 @dataclass
@@ -112,8 +113,14 @@ class LoopWorker:
         self.max_steps, self.max_nudges, self.system = max_steps, max_nudges, system
         self.checkpoint_every = checkpoint_every
 
-    def run(self, task: Task, repo: Repository, agent_id: str) -> WorkerResult:
-        session = Session.open(repo, agent_id) if self.checkpoint_every else None
+    def resume(self, task: Task, repo: Repository, agent_id: str, history: List[dict], note: str) -> WorkerResult:
+        """Continue an earlier conversation with one more message (layer 3 of the cost ladder): the branch already
+        holds the agent's work merged with main, ``history`` is what the agent said and did, ``note`` says what changed."""
+        return self.run(task, repo, agent_id, history, note)
+
+    def run(self, task: Task, repo: Repository, agent_id: str, history: Optional[List[dict]] = None,
+            note: Optional[str] = None) -> WorkerResult:
+        session = Session.open(repo, agent_id) if (self.checkpoint_every and history is None) else None
         if session is not None and session.done is not None:
             d = dict(session.done)                            # finished before the crash: nothing to redo
             d["touched"] = tuple(d["touched"])
@@ -125,6 +132,8 @@ class LoopWorker:
             tools = Toolbox(ws)
         messages: List[dict] = [{"role": "system", "content": self.system},
                                 {"role": "user", "content": task_prompt(task)}]
+        if history is not None:
+            messages = [dict(m) for m in history] + [{"role": "user", "content": note or "Main has changed; check your work."}]
         result = WorkerResult(GAVE_UP)
         nudges, first = 0, 1
         saved = session.state if session is not None else None
@@ -246,6 +255,13 @@ class CliWorker:
             except OSError as e:
                 return WorkerResult(ERROR, error=f"cannot run {argv[0]}: {e}")
             tail = (proc.stdout or "").strip()[-2000:]
+            ptok = ctok = 0
+            if "--output-format" in self.argv and proc.returncode == 0:      # `claude -p --output-format json` reports its usage
+                try:
+                    reply = parse_cli_output(proc.stdout or "")
+                    tail, ptok, ctok = reply.content.strip()[-2000:], reply.usage.prompt_tokens, reply.usage.completion_tokens
+                except ModelError:
+                    pass
             if proc.returncode != 0:
                 detail = (proc.stderr or "").strip()[-500:] or tail[-500:]     # some agents report errors on stdout
                 return WorkerResult(ERROR, summary=tail, error=f"exit status {proc.returncode}: {detail}")
@@ -260,7 +276,8 @@ class CliWorker:
             ws = repo.resume(agent_id)
             commit = pushed.commit or (ws.head if ws.head != ws.fork_base else None)
             return WorkerResult(DONE, summary=tail, commit=commit,
-                                touched=tuple(sorted({c.path for c in ws.changes_since_fork()})))
+                                touched=tuple(sorted({c.path for c in ws.changes_since_fork()})),
+                                prompt_tokens=ptok, completion_tokens=ctok)
 
     def _execute(self, argv, root, stdin, co, task) -> "subprocess.CompletedProcess":
         if not self.checkpoint_every:

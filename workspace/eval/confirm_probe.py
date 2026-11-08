@@ -1,7 +1,8 @@
 """How reliably can a small model tell "my change is already on main" (agreement) from "someone made the same
 edit, but mine was relative to what I saw" (a lost increment)?
 
-    PYTHONPATH=workspace/src python3 workspace/eval/confirm_probe.py [model ...]
+    PYTHONPATH=workspace/src python3 workspace/eval/confirm_probe.py [--n 8] [model ...]
+    PYTHONPATH=workspace/src python3 workspace/eval/confirm_probe.py --claude [--n 5]     # `claude -p`, run from your own terminal
 
 Two ways of asking are compared on cases where agreement is right (a semicolon, a rename) and wrong (a counter,
 a version bump): a yes/no question to the model, and "re-apply your task to the current line" with the answer
@@ -14,6 +15,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 from cmws_ws.agents import OpenAICompatModel
+from cmws_ws.agents.llm import CliModel
 URL = os.environ.get("AGENTTRUNK_LLM_URL", os.environ.get("CMWS_LLM_URL", "http://127.0.0.1:11434/v1"))
 _host = os.environ.get("AGENTTRUNK_LLM_HOST", os.environ.get("CMWS_LLM_HOST"))
 HOST = {"Host": _host} if _host else None
@@ -47,9 +49,17 @@ def ask(model, prompt):
     r = model.chat([{"role": "user", "content": prompt}], [])
     return r.content.strip(), r.usage.prompt_tokens, r.usage.completion_tokens
 
+args = sys.argv[1:]
 N = 8
-for name in (sys.argv[1:] or ["eco:latest", "quality:latest"]):
-    m = OpenAICompatModel(name, URL, timeout=300, temperature=0.7, headers=HOST)
+if "--n" in args:
+    i = args.index("--n")
+    N = int(args[i + 1])
+    del args[i:i + 2]
+claude = "--claude" in args
+if claude:
+    args.remove("--claude")
+for name in (["claude -p"] if claude else (args or ["eco:latest", "quality:latest"])):
+    m = CliModel() if claude else OpenAICompatModel(name, URL, timeout=300, temperature=0.7, headers=HOST)
     print(f"\n=== {name}")
     for label, c in CASES.items():
         ok_yn = ok_ra = 0; toks_yn = []; toks_ra = []

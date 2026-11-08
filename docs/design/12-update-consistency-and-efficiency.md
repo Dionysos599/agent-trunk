@@ -1,7 +1,7 @@
 # Update 1.1: consistency and efficiency
 
-**Status: U1, U2 and U3 are implemented and tested (section 6.1 says what was built, where it differs from the plan,
-and what the tests cover); U4 to U7 are still plans.** It is an update patch on top of tag `v1.0.0`: it says what
+**Status: U1 to U4 are implemented and tested (sections 6.1 and 6.2 say what was built, where it differs from the plan,
+and what the tests cover); U5 to U7 are still plans.** It is an update patch on top of tag `v1.0.0`: it says what
 changes, why, how each change is checked, and in what order. Numbers quoted as measurements in sections 1 to 5 were
 taken on the 1.0 code and are marked as such; the measurements of the new code are in `docs/eval/results.md`.
 
@@ -322,7 +322,7 @@ speedup) and the `claude` command line in small samples; every table says how ma
 | U1 (done) | `gitlike` strategy; serializability checker; both in the harness and the tables | the 12/12 against 0/12 result reproduces; the checker passes its hand-made histories; `docs/eval` shows the new column |
 | U2 (done) | merge policies (`relative`, `converge`, `append`) in the merge engine, tasks and the MCP server | the demo's syncs fall from 24 to about zero with the two shared files declared `append` and nothing lost; property tests and the mutation sweep pass |
 | U3 (done) | survival check and transition checks | the counter case is refused with no tokens; a merger keeping one side is refused; a check that cannot fail is reported |
-| U4 | the ladder: re-apply and compare (after the probe), incremental continuation | tokens per resolution against full redo are measured by layer; silent-loss columns do not move |
+| U4 (done; Claude measurement pending) | the ladder: re-apply and compare (after the probe), incremental continuation | tokens per resolution against full redo are measured by layer; silent-loss columns do not move |
 | U5 | width cap, hedging, shared context, speculative queue | scaling curves and token ratios for the three workloads, simulated and, where possible, real |
 | U6 | orchestrator tools and the digest | orchestrator tokens against merging in its own context, on the same tasks |
 | U7 | replay study of real history; the cost-against-loss figure; the report | the figure, the replay classification table and the updated `docs/eval/results.md` |
@@ -415,6 +415,46 @@ then pinned by `tests/test_u1u3_hardening.py`.
   must stay `relative`.
 * A check can be wrong or too weak (section 7). The lint finds only the checks that are already true.
 * The serializability checker needs deterministic agents; for a model it is approximated by the acceptance checks.
+
+### 6.2 What U4 turned into: layers 2 and 3 of the ladder (`agents/ladder.py`, `MergeQueue`)
+
+* **Layer 2, re-apply and compare.** When a landing is `stale` and every stale file is a text file that the agent *changed*
+  and main changed too, the queue asks a `Reapplier` for each file: the task, the agent's own change as a diff, main's
+  current file, and "what would the file be if you carried out your task again? answer with the complete file in one
+  code block". The **program** compares the answer with main's file: equal is agreement (nothing to land: `noop`, branch
+  and main untouched); different, the answer is written into the merge of the branch and main and goes through the
+  normal landing (merge, survival, transition checks, your validator). It is never asked "is your goal met?"
+  (the probe: 1 of 16 correct for that question on the counter, 8 of 8 for this one).
+* Guards, all tested: a file over 8000 characters is not sent; an answer without a code block, from a model that failed,
+  or that rewrites far more than the agent's change did (more than 5 lines or 3 times the size of the change) is
+  refused; line endings and the final newline are restored to main's style; a file the agent only *read*, a listing
+  that went stale, a file added or removed, a binary file, and conflicts in files that are not stale all stop the layer
+  and the next one takes over; **an agreement still has to satisfy the task's own transition checks evaluated on main
+  itself** (so the counter's `increases` refuses a wrong "already done"). Without such a check, a model that wrongly says
+  "agreement" loses the increment silently: the limit is tested and stated, and is why layer 2 stays off unless
+  configured and why declaring checks matters.
+* **A race found by the tests.** After layer 2 adopted main, the branch's read record was reset, so when main moved
+  *again* while the model was answering, the identical edit merged as agreement and an increment was lost. Fixed: the
+  files re-applied are recorded as reads of main as it is now, so the landing is refused as stale again and layer 2
+  runs once more, up to `max_reapply` (3) times. The same is done after layer 3.
+* **Layer 3, continue the conversation** (`LoopWorker.resume`): the branch is merged with main (conflicts marked) and the
+  agent's own transcript gets one message with why the landing failed, which files have markers and what landed. It
+  needs a tool-loop worker (a command-line agent has no conversation to resume), and the prompt tokens include the
+  earlier transcript, so its saving is in steps and completion tokens, not in prompt tokens.
+* **Order and switches.** For a stale landing: layer 2, then (for conflicts) the merger of 1.0, then layer 3, then
+  the redo (layer 4), then a person. `MergeQueue(reapply=..., continue_worker=..., layers=(2, 3, 4))` turns them on
+  (all off by default: no `reapply`, no `continue_worker`); a task's `"layers": [4]` or `[2, 4]` overrides the queue per
+  task; files too large or not text drop out by themselves. `agenttrunk orchestrate --reapply model|claude --layers 2,3,4`.
+* **Statistics.** `queue.ladder_report()` gives, per layer, how many times it was tried, how many settled the landing and
+  the tokens it spent; every `Landing` carries the tokens of its steps; the evaluation rows have `ladder` and
+  `ladder_tokens`. `CliWorker` and `CliModel` read the token use of `claude -p --output-format json`, so claude runs report
+  tokens too.
+* **Measured** (`docs/eval/results.md`): with `eco` and `quality`, layer 2 settled every collision of `counter` and
+  `shared` and cut total tokens by 55 to 65% and the time by 2 to 3 times, with 0 updates lost. It needs thinking switched
+  off for its one-answer question (a thinking model ran out of tokens before answering). Layer 3 did **not** pay off:
+  used alone it settled 0 to 0.5 of 3 continuations per run and cost 6 to 16% more tokens than the redo in three of four
+  cells (it lands stale again like any slow retry and has no retry of its own); it stays off by default. Claude has not
+  been measured yet (its usage limit was reached; the probe answered 5 of 5 correctly).
 
 ## 7. Risks and open questions
 

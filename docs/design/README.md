@@ -16,5 +16,6 @@ Read them in order; each builds on the one before.
 | 10 | [Reliability and the orchestrator](10-reliability-and-orchestrator.md) | exactly-once tool calls, checkpoints, fenced claims, resumable runs |
 | 11 | [MCP server](11-mcp-server.md) | the task board and workflow tools for agents in any MCP client |
 | 12 | [Update: consistency and efficiency](12-update-consistency-and-efficiency.md) | the 1.1 update: U1 to U3 (isolation levels, merge policies, survival and transition checks) are implemented, U4 to U7 are planned |
+| 13 | [Target: correct at 32 agents, fast, cheap in tokens](13-scale-and-cost-target.md) | the claims to be made at scale, how each number will be measured, and what has to be built (a plan; nothing measured yet) |
 
 The evaluation is in [../eval/results.md](../eval/results.md).

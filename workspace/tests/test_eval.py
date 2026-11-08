@@ -16,7 +16,7 @@ from workers import DirFS, OracleWorker, base_id   # noqa: E402
 
 def args(**kw):
     d = dict(latency=0.05, seed=1, parallel=4, model="m", llm_url="", llm_host=None, max_steps=5, timeout=10,
-             oracle_redo=True, max_redos=6, tag="t", sloppy_merger=False, no_guard=False, untracked_reads=False, assume_reads=False)
+             oracle_redo=True, max_redos=6, tag="t", reapply="none", layers="2,3,4", continue_layer=False, sloppy_merger=False, no_guard=False, untracked_reads=False, assume_reads=False)
     d.update(kw)
     return argparse.Namespace(**d)
 
@@ -205,3 +205,33 @@ class IsolationLevelTests(unittest.TestCase):
         self.assertIn("2/2", out)
         rows[0]["serializable"] = None
         self.assertIn("n/a", report.table([dict(rows[0], serializable=None)], ("suite", "strategy"), report.COLS))
+
+
+class LadderColumnTests(unittest.TestCase):
+    def run_row(self, suite, **kw):
+        return run_eval.run_one(SUITES[suite](), "serializable", "oracle", args(**kw), 1)
+
+    def test_an_oracle_reapplier_settles_the_collisions_at_layer_two(self):
+        row = self.run_row("counter", reapply="oracle", max_redos=0)
+        self.assertTrue(row["all_ok"])
+        self.assertEqual(row["escalated"], 0)
+        self.assertGreaterEqual(row["ladder"]["2"]["settled"] if "2" in row["ladder"] else row["ladder"][2]["settled"], 1)
+        self.assertEqual(row["via"].get("reapply"), sum(1 for d in row["detail"] if d["via"] == "reapply"))
+
+    def test_without_a_reapplier_the_same_run_needs_redos(self):
+        row = self.run_row("counter", reapply="none", max_redos=0)
+        self.assertGreater(row["escalated"], 0)
+        self.assertEqual(sum(v["tried"] for v in row["ladder"].values()), 0)
+
+    def test_layers_can_be_switched_off_from_the_harness(self):
+        row = self.run_row("counter", reapply="oracle", layers="4", max_redos=0)
+        self.assertGreater(row["escalated"], 0)
+
+    def test_the_oracle_reapplier_gives_up_on_a_multi_file_edit(self):
+        row = self.run_row("semantic", reapply="oracle")
+        self.assertFalse(row["main_broken"])
+
+    def test_tokens_in_the_row_include_the_ladder(self):
+        row = self.run_row("counter", reapply="oracle")
+        self.assertIn("ladder_tokens", row)
+        self.assertGreaterEqual(row["tokens"], row["ladder_tokens"])

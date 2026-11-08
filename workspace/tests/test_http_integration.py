@@ -414,6 +414,17 @@ class GatewayIntegrationTest(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertIn("sometimes", r.stderr)
 
+    def test_orchestrate_refuses_bad_ladder_options(self):
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([SRC, ROOT]), AGENTTRUNK_URL=self.base)
+        wrapper = os.path.join(ROOT, "bin", "agenttrunk")
+        name = f"main-{time.time_ns()}"
+        Repository.init(self.kv(), {"a.py": b"1\n"}, main=name)
+        for extra, needle in ((["--layers", "9"], "--layers"), (["--layers", "x"], "--layers"), (["--reapply", "model"], "--reapply model needs --model")):
+            r = subprocess.run([wrapper, "--main", name, "orchestrate", "r1", *extra, "--exec", "true"], env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(needle, r.stderr)
+
     def test_the_agenttrunk_command_creates_and_shows_a_board(self):
         import tempfile
         from pathlib import Path

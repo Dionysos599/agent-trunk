@@ -41,17 +41,19 @@ sys.path[:0] = [str(HERE), str(HERE.parent / "src")]
 
 from cmws_ws.agents import (CliWorker, CommandValidator, LoopWorker, MergeQueue, OpenAICompatModel, Orchestrator, Task,
                             TaskGraph, merger_worker)
+from cmws_ws.agents.ladder import FnReapplier, ModelReapplier
+from cmws_ws.agents.llm import CliModel
 from cmws_ws.checks import parse_checks
 from cmws_ws.kv import MemoryKV
 from cmws_ws.leases import LeaseTable
 from cmws_ws.policy import rules_from_declaration
 from cmws_ws.repo import Repository
-from cmws_ws.serial import check_serializable, check_unordered
+from cmws_ws.serial import MemFS, check_serializable, check_unordered
 
 from suites import SUITES, Suite
 from workers import DirFS, OracleWorker, SloppyMerger, base_id, cli_in_dir, loop_on
 
-CLAUDE = ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits"]
+CLAUDE = ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits", "--output-format", "json"]   # json: reports token use
 
 # strategy -> how the merge queue is set (fork strategies only)
 QUEUE = {
@@ -129,7 +131,32 @@ class Backend:
                 if me.uses_claude(tid):
                     return CliWorker(CLAUDE, timeout=me.args.timeout).run(task, repo, agent_id)
                 return LoopWorker(me.model, max_steps=me.args.max_steps, checkpoint_every=3).run(task, repo, agent_id)
+
+            def resume(self, task, repo, agent_id, history, note):          # layer 3: only the tool loop has a conversation
+                return LoopWorker(me.model, max_steps=me.args.max_steps).resume(task, repo, agent_id, history, note)
         return ByTask()
+
+    def reapplier(self):
+        """Layer 2 for this backend: an oracle applies the task's edit to main's text; a model is asked."""
+        mode = self.args.reapply
+        if mode == "oracle":
+            def answer(task, path, main_text):
+                fs = MemFS({path: main_text})
+                try:
+                    self.edits[base_id(task.id)](fs)
+                except Exception:                                  # noqa: BLE001 - an edit that needs other files cannot be re-applied
+                    return None
+                return fs.read_text(path)
+            return FnReapplier(answer)
+        if mode == "model":
+            # a one-answer question: thinking off (a thinking model spent its whole budget before answering a longer file)
+            quiet = OpenAICompatModel(self.args.model, self.args.llm_url, timeout=self.args.timeout,
+                                      headers={"Host": self.args.llm_host} if self.args.llm_host else None,
+                                      extra={"reasoning_effort": "none"})
+            return ModelReapplier(quiet)
+        if mode == "claude":
+            return ModelReapplier(CliModel())
+        return None
 
     def merger(self):
         if self.args.sloppy_merger:
@@ -196,7 +223,9 @@ def run_one(suite: Suite, strategy: str, kind: str, args, rep: int) -> dict:
         worker = be.fork_worker()
         queue = MergeQueue(repo, validator=validator, merger=be.merger(), redo_worker=worker if kind != "oracle" or args.oracle_redo else None,
                            max_redos=args.max_redos, keep_both_sides=not args.no_guard, isolation=qopts["isolation"],
-                           survival=qopts["survival"], accept_checks=qopts["accept"], policies=qopts["merge"])
+                           survival=qopts["survival"], accept_checks=qopts["accept"], policies=qopts["merge"],
+                           reapply=be.reapplier(), continue_worker=worker if args.continue_layer and hasattr(worker, "resume") else None,
+                           layers=[int(x) for x in args.layers.split(",") if x.strip()])
         orch = Orchestrator(repo, worker, queue=queue, owner="eval", parallel=1 if base == "serial" else args.parallel,
                             patience=3600, poll=0.01, claim_ttl=3600)
         summary = orch.run(f"r{rep}", graph=TaskGraph(tasks))
@@ -217,7 +246,9 @@ def run_one(suite: Suite, strategy: str, kind: str, args, rep: int) -> dict:
                 rejected += sum(1 for s in land.steps if s.status == "rejected")
                 via[land.via if land.landed or land.status == "noop" else land.status] = via.get(
                     land.via if land.landed or land.status == "noop" else land.status, 0) + 1
-        row.update(tokens=sum((o.result.prompt_tokens + o.result.completion_tokens) for o in summary.report.outcomes.values() if o.result),
+        ladder_tokens = sum(getattr(o.landed, "tokens", 0) for o in summary.report.outcomes.values())
+        row.update(ladder=queue.ladder_report(), ladder_tokens=ladder_tokens,
+                   tokens=ladder_tokens + sum((o.result.prompt_tokens + o.result.completion_tokens) for o in summary.report.outcomes.values() if o.result),
                    conflicts=conflicts, rejected=rejected, via=via, detail=detail,
                    empties=sum(1 for d in detail for st in d["steps"] if st[1] == "empty"),
                    escalated=len(queue.escalations.list()),
@@ -254,6 +285,11 @@ def main(argv=None) -> int:
     ap.add_argument("--sloppy-merger", action="store_true",
                     help="merger that keeps one side of every conflict (simulates a weak model's mistake)")
     ap.add_argument("--no-guard", action="store_true", help="turn off the check that a resolution keeps both sides")
+    ap.add_argument("--reapply", choices=["none", "oracle", "model", "claude"], default="none",
+                    help="cost ladder layer 2: who answers 're-apply and compare' (oracle = the suite's own edit, model = --model, "
+                         "claude = `claude -p`)")
+    ap.add_argument("--layers", default="2,3,4", help="ladder layers the queue may use (2 re-apply, 3 continue, 4 redo)")
+    ap.add_argument("--continue-layer", action="store_true", help="enable layer 3 (the agent's own conversation) for model backends")
     ap.add_argument("--tag", default="", help="label stored with every row (for ablations)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--model", default="eco:latest")

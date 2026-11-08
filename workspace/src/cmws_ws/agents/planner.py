@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 from ..checks import parse_checks
 from ..policy import rules_from_declaration
 from .graph import InvalidGraph, TaskGraph
+from .ladder import validate_layers
 from .llm import ChatModel, ModelError
 from .worker import Task
 
@@ -82,7 +83,7 @@ def parse_tasks(text: str) -> List[Task]:
             raise ValueError(f"task {i}: paths and depends_on must be lists of strings")
         tasks.append(Task(str(item.get("id") or f"task-{i + 1}"), str(item["description"]),
                           tuple(paths), "", tuple(deps), rules_from_declaration(item.get("merge")),
-                          parse_checks(item.get("accept"))))
+                          parse_checks(item.get("accept")), validate_layers(item.get("layers"))))
     return tasks
 
 

@@ -249,6 +249,16 @@ not show that the task did its work).
 Independently of any declaration, a landing is also refused when lines that either side *added or removed on purpose*
 did not survive the merge (for example a merger agent that keeps one side).
 
+### Cheaper than a redo (optional)
+
+When a branch is stale because main changed a file the agent also changed, redoing the whole task is the expensive way
+out. With `MergeQueue(reapply=ModelReapplier(model))` (or `agenttrunk orchestrate --reapply model|claude`) the queue first
+asks, for each such file, what it would look like if the agent carried out its task again on the current main, and a
+program compares the answer with main: equal means the change is already there, different means the answer is the
+resolution. It still goes through every check before landing. A second layer, `continue_worker=worker`, hands the
+agent's own conversation one message instead of starting over. Both are off by default; a task can choose its layers
+(`"layers": [2, 4]`). Declaring `accept` checks is what keeps a model's wrong "it is already done" from losing work.
+
 ### Surviving crashes
 
 * Tool calls carry sequence numbers and run once; a retried call returns the recorded answer.

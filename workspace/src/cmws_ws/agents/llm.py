@@ -76,8 +76,9 @@ class OpenAICompatModel:
     def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434/v1",
                  api_key: Optional[str] = None, timeout: float = 300.0, temperature: float = 0.2,
                  retries: int = 2, backoff: float = 1.0, sleep: Callable[[float], None] = time.sleep,
-                 headers: Optional[Dict[str, str]] = None) -> None:
+                 headers: Optional[Dict[str, str]] = None, extra: Optional[Dict[str, object]] = None) -> None:
         self.model, self.base_url = model, base_url.rstrip("/")
+        self.extra = dict(extra or {})              # more request fields, e.g. {"reasoning_effort": "none"} to switch thinking off
         self.extra_headers = dict(headers or {})
         self.api_key, self.timeout, self.temperature = api_key, timeout, temperature
         self.retries, self.backoff, self._sleep = retries, backoff, sleep
@@ -87,6 +88,7 @@ class OpenAICompatModel:
                    "stream": False}
         if tools:
             payload["tools"] = tools
+        payload.update(self.extra)
         headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -106,6 +108,56 @@ class OpenAICompatModel:
             if attempt < self.retries:
                 self._sleep(self.backoff * (2 ** attempt))
         raise last
+
+
+class CliModel:
+    """A command-line model (``claude -p``) as a plain chat model with no tools: one prompt in, one answer out.
+
+    The conversation is flattened into one prompt. With ``--output-format json`` the command reports its token use,
+    which is read from the ``usage`` object (input, cache and output tokens). Used for short, tool-free questions such as the
+    re-apply step of the cost ladder; it cannot drive the tool loop.
+    """
+
+    def __init__(self, argv: Sequence[str] = ("claude", "-p", "{prompt}", "--output-format", "json"),
+                 timeout: float = 300.0) -> None:
+        self.argv, self.timeout = list(argv), timeout
+
+    @staticmethod
+    def flatten(messages: List[dict]) -> str:
+        return "\n\n".join(str(m.get("content") or "") for m in messages if m.get("role") in ("system", "user"))
+
+    def chat(self, messages: List[dict], tools: List[dict]) -> Reply:
+        import subprocess
+        prompt = self.flatten(messages)
+        args = [a.replace("{prompt}", prompt) for a in self.argv]
+        stdin = None if any("{prompt}" in a for a in self.argv) else prompt
+        try:
+            proc = subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=self.timeout)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            raise ModelError(f"cannot run {args[0]}: {e}") from e
+        if proc.returncode != 0:
+            raise ModelError(f"{args[0]} exited with {proc.returncode}: {(proc.stderr or proc.stdout)[-200:]}")
+        return parse_cli_output(proc.stdout)
+
+
+def parse_cli_output(out: str) -> Reply:
+    """The answer and token use from ``claude -p --output-format json`` (plain text works too, with no usage)."""
+    try:
+        body = json.loads(out)
+    except (ValueError, RecursionError):
+        return Reply(out.strip())
+    if not isinstance(body, dict):
+        return Reply(out.strip())
+    text = body.get("result")
+    if not isinstance(text, str):
+        raise ModelError(f"unexpected output: {out[:200]!r}")
+    u = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+
+    def n(k):
+        v = u.get(k)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+    prompt = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens")
+    return Reply(text, (), Usage(prompt, n("output_tokens")))
 
 
 class ScriptedModel:

@@ -48,7 +48,8 @@ from ..objects import Commit
 from ..repo import Repository, SubmitResult
 from ..survival import survival_problems
 from . import fence
-from .worker import DONE, LoopWorker, Task, Worker, WorkerResult, run_task
+from .ladder import Reapplier, match_style, plausible, validate_layers
+from .worker import DONE, LoopWorker, Task, Worker, WorkerResult, assume_read, run_task
 
 MARKER = re.compile(r"^(<<<<<<< |>>>>>>> )", re.M)
 
@@ -96,15 +97,16 @@ class CommandValidator:
 
 @dataclass
 class Step:
-    stage: str          # auto | merger | redo | human
+    stage: str          # auto | reapply | merger | continue | redo | human
     status: str
     detail: str = ""
+    tokens: int = 0     # model tokens this step spent (when the worker or reapplier reports them)
 
 
 @dataclass
 class Landing:
     status: str                              # landed | noop | escalated
-    via: str = "auto"                        # which stage got it in (auto | merger | redo | human)
+    via: str = "auto"                        # which stage got it in (auto | reapply | merger | continue | redo | human)
     commit: Optional[str] = None
     steps: List[Step] = field(default_factory=list)
     branch: str = ""                         # the branch that landed or was left for a person
@@ -114,6 +116,10 @@ class Landing:
     @property
     def landed(self) -> bool:
         return self.status == "landed"
+
+    @property
+    def tokens(self) -> int:
+        return sum(st.tokens for st in self.steps)
 
 
 class Escalations:
@@ -184,12 +190,17 @@ class MergeQueue:
                  redo_worker: Optional[Worker] = None, max_redos: int = 1,
                  escalations: Optional[Escalations] = None, keep_both_sides: bool = True,
                  require_changes: bool = True, isolation: str = "snapshot", survival: bool = True,
-                 accept_checks: bool = True, policies: bool = True) -> None:
+                 accept_checks: bool = True, policies: bool = True, reapply: Optional[Reapplier] = None,
+                 continue_worker=None, layers: Sequence[int] = (2, 3, 4), max_reapply: int = 3) -> None:
         if isolation not in self.ISOLATIONS:
             raise ValueError(f"unknown isolation {isolation!r}; use one of {', '.join(self.ISOLATIONS)}")
         self.repo, self.validator, self.merger = repo, validator, merger
         self.isolation, self.survival = isolation, survival
         self.accept_checks, self.policies = accept_checks, policies
+        self.reapply, self.continue_worker, self.max_reapply = reapply, continue_worker, max_reapply
+        self.layers = validate_layers(list(layers)) or ()
+        self.ladder: Dict[int, Dict[str, int]] = {n: {"tried": 0, "settled": 0, "tokens": 0} for n in (2, 3, 4)}
+        self._stat_lock = threading.Lock()
         self._ctx = threading.local()                    # the task being landed on this thread (for its rules and checks)
         self.keep_both_sides = keep_both_sides
         self.require_changes = require_changes
@@ -311,6 +322,17 @@ class MergeQueue:
                 if r.landed or r.status == "noop":
                     return self._done(landing, r, "auto", agent_id)
 
+        if r.status == "stale" and self._layer(task, 2) and self.reapply is not None:
+            for _ in range(self.max_reapply):                        # main may move again while the model answers
+                rr2 = self._reapply_stage(task, agent_id, r, landing, message)
+                if rr2 is None:
+                    break
+                if rr2.landed or rr2.status == "noop":
+                    return self._done(landing, rr2, "reapply", agent_id)
+                r = rr2
+                if r.status != "stale":
+                    break
+
         if self.merger is not None and r.status in ("conflict", "rejected"):
             mr = self._merger_stage(task, agent_id, orig_base, r, landing, message)
             if mr is not None:
@@ -319,7 +341,14 @@ class MergeQueue:
                 mr.conflicts = mr.conflicts or r.conflicts      # keep what the person needs to see
                 r = mr
 
-        if self.redo_worker is not None:
+        if self._layer(task, 3) and self.continue_worker is not None and result is not None and result.transcript:
+            cr = self._continue_stage(task, agent_id, result, orig_base, r, landing, message)
+            if cr is not None:
+                if cr.landed or cr.status == "noop":
+                    return self._done(landing, cr, "continue", agent_id)
+                r = cr
+
+        if self.redo_worker is not None and self._layer(task, 4):
             for n in range(1, self.max_redos + 1):
                 redo_id = self._redo_stage(task, n, orig_base, landing, r)
                 if redo_id is None:
@@ -327,6 +356,7 @@ class MergeQueue:
                 rr = self._try(redo_id, message)
                 landing.steps.append(Step("redo", rr.status, self._describe(rr)))
                 if rr.landed or rr.status == "noop":
+                    self._stat(4, 0, settled=True, tried=False)
                     return self._done(landing, rr, "redo", redo_id)
                 r = rr
         return self._human(task, agent_id, landing, r)
@@ -421,13 +451,129 @@ class MergeQueue:
                  (task.context + "\n\n" if task.context else "") + why +
                  "Since then these changes landed on the main line; the project you see already includes them. "
                  "Do the task again on top of them:\n" + (diff or "(no textual changes)"),
-                 task.depends_on, task.merge, task.accept)
+                 task.depends_on, task.merge, task.accept, task.layers)
         res = run_task(self.redo_worker, repo, t, redo_id)
-        landing.steps.append(Step("redo", res.status, res.summary or res.error))
+        spent = res.prompt_tokens + res.completion_tokens
+        landing.steps.append(Step("redo", res.status, res.summary or res.error, spent))
+        self._stat(4, spent, settled=False)
         if res.ok and res.commit is None and self.require_changes:
             landing.steps.append(Step("redo", "empty", EMPTY))
             return None                                       # it did nothing again: try once more or give up
         return redo_id if res.ok else None
+
+    # ---- the cost ladder: layers 2 and 3 -----------------------------------------------------
+
+    def _layer(self, task: Task, n: int) -> bool:
+        allowed = task.layers if task.layers is not None else self.layers
+        return n in allowed
+
+    def _stat(self, layer: int, tokens: int, settled: bool, tried: bool = True) -> None:
+        with self._stat_lock:
+            row = self.ladder[layer]
+            row["tried"] += 1 if tried else 0
+            row["settled"] += 1 if settled else 0
+            row["tokens"] += tokens
+
+    def ladder_report(self) -> Dict[int, Dict[str, int]]:
+        with self._stat_lock:
+            return {n: dict(row) for n, row in self.ladder.items()}
+
+    def _reapply_stage(self, task: Task, agent_id: str, r: SubmitResult, landing: Landing,
+                       message: str) -> Optional[SubmitResult]:
+        """Layer 2: for every stale file the agent also changed, ask what it would be if the task were done again on
+        main, compare with main, and land the resolution (or the agreement) through the normal checks."""
+        repo, store = self.repo, self.repo.store
+        ws = repo.resume(agent_id)
+        main = repo.head()
+        skip = lambda why: (landing.steps.append(Step("reapply", "skipped", why)), None)[1]       # noqa: E731
+        if not r.stale_reads or any(s.kind != "file" for s in r.stale_reads):
+            return skip("a directory listing went stale; a file cannot be re-applied")
+        head_tree = store.get_commit(ws.head).tree
+        texts: Dict[str, tuple] = {}
+        for s_ in r.stale_reads:
+            mine_e = store.lookup(head_tree, s_.path)
+            mine_id = mine_e.id if mine_e is not None and mine_e.mode == "file" else None
+            if s_.observed is None or s_.current is None or mine_id is None or mine_id == s_.observed:
+                return skip(f"{s_.path}: the agent did not change it or it was added or removed, nothing to re-apply")
+            try:
+                texts[s_.path] = tuple(store.get_blob(b).decode("utf-8") for b in (s_.observed, mine_id, s_.current))
+            except UnicodeDecodeError:
+                return skip(f"{s_.path} is not text")
+        spent, chosen = 0, {}
+        for path, (base_t, mine_t, main_t) in sorted(texts.items()):
+            ans = self.reapply.reapply(task, path, base_t, mine_t, main_t)
+            spent += ans.tokens
+            if ans.text is None:
+                self._stat(2, spent, settled=False)
+                landing.steps.append(Step("reapply", "no-answer", f"{path}: {ans.note}", spent))
+                return None
+            new = match_style(ans.text, main_t)
+            if new != main_t and not plausible(base_t, mine_t, main_t, new):
+                self._stat(2, spent, settled=False)
+                landing.steps.append(Step("reapply", "implausible", f"{path}: the answer rewrites far more than the change did", spent))
+                return None
+            chosen[path] = new
+        policy = repo.policy_table(main, task.merge if self.policies else ())
+        merged = repo.merge_into(ws.head, main, f"ws/{agent_id}", "main", keep_going=True, policy=policy)
+        others = [c.path for c in merged.conflicts if c.path not in chosen]
+        if others:
+            self._stat(2, spent, settled=False)
+            landing.steps.append(Step("reapply", "conflicts-elsewhere", ", ".join(others), spent))
+            return None
+        tree = store.update(merged.tree, {p: store.put_blob(t.encode("utf-8")) for p, t in chosen.items()})
+        agreed = [p for p, t in chosen.items() if t == texts[p][2]]
+        if tree == store.get_commit(main).tree:                      # nothing left to land: the change is on main already
+            if self.accept_checks and task.accept:
+                files = repo.files_at(main)
+                failed = run_checks(task.accept, files, files)       # agreement must still satisfy the task's own conditions
+                if failed:
+                    self._stat(2, spent, settled=False)
+                    landing.steps.append(Step("reapply", "agreement-refused", "; ".join(failed), spent))
+                    return None
+            self._stat(2, spent, settled=True)
+            landing.steps.append(Step("reapply", "agreement", ", ".join(sorted(chosen)), spent))
+            return SubmitResult("noop", detail="agreement")
+        cid = store.put_commit(Commit(tree, (ws.head, main), agent_id, f"Merge main into ws/{agent_id} (re-applied)", repo.clock()))
+        ws._adopt(cid, main)
+        assume_read(repo, agent_id, chosen)           # the answer depends on main's file as it is now: if it moves again, stale again
+        rr = self._try(agent_id, message)
+        ok = rr.landed or rr.status == "noop"
+        self._stat(2, spent, settled=ok)
+        how = ("agreed on " + ", ".join(agreed) + "; " if agreed else "") + "re-applied " + ", ".join(sorted(set(chosen) - set(agreed)))
+        landing.steps.append(Step("reapply", f"land:{rr.status}", how.strip("; ") + ((" | " + self._describe(rr)) if not ok else ""), spent))
+        return rr
+
+    def _continue_stage(self, task: Task, agent_id: str, result: WorkerResult, orig_base: str, r: SubmitResult,
+                        landing: Landing, message: str) -> Optional[SubmitResult]:
+        """Layer 3: merge main into the branch (conflicts marked) and give the agent's own conversation one message."""
+        repo = self.repo
+        ws = repo.resume(agent_id)
+        main = repo.head()
+        rules = task.merge if self.policies else ()
+        merged = repo.merge_into(ws.head, main, f"ws/{agent_id}", "main", keep_going=True, policy=repo.policy_table(main, rules))
+        cid = repo.store.put_commit(Commit(merged.tree, (ws.head, main), agent_id,
+                                           f"Merge main into ws/{agent_id}" + (" (conflicts marked)" if merged.conflicts else ""),
+                                           repo.clock()))
+        ws._adopt(cid, main)
+        paths = sorted(c.path for c in merged.conflicts)
+        why = self._describe(r) or r.status
+        note = (f"Your change could not be landed as it was: {r.status} ({why}). Main moved while you worked; your branch now "
+                "contains it, merged into your work. "
+                + (f"These files have conflict markers to resolve, keeping what both sides intended: {', '.join(paths)}. " if paths else "")
+                + "What landed on main meanwhile:\n" + self._upstream_summary(orig_base, main)
+                + "\nCheck that your change still does what the task asks on top of it, fix what is needed, and finish.")
+        res = self.continue_worker.resume(task, repo, agent_id, result.transcript, note)
+        spent = res.prompt_tokens + res.completion_tokens
+        if not res.ok or (res.commit is None and self.require_changes):
+            self._stat(3, spent, settled=False)
+            landing.steps.append(Step("continue", res.status if not res.ok else "empty", res.summary or res.error or EMPTY, spent))
+            return None
+        assume_read(repo, agent_id, [c.path for c in repo.resume(agent_id).changes_since_fork()])
+        rr = self._try(agent_id, message)
+        ok = rr.landed or rr.status == "noop"
+        self._stat(3, spent, settled=ok)
+        landing.steps.append(Step("continue", f"land:{rr.status}", (res.summary or "") if ok else self._describe(rr), spent))
+        return rr
 
     def _human(self, task: Task, agent_id: str, landing: Landing, r: SubmitResult) -> Landing:
         conflicts = [[c.path, c.kind] for c in r.conflicts]

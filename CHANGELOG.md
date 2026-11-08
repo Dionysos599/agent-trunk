@@ -23,6 +23,15 @@ is checked for lost work without spending a model token.
 * `textmerge.hunks` trims lines the two texts share at both ends before diffing (long files with a small edit: about 40 ms
   for 60,000 lines); `DirFS.write` in the evaluation harness replaces files atomically.
 
+* **Cost ladder** (`agents/ladder.py`): for a stale landing the queue can first ask the agent what the file would be if
+  it did its task again on the current main and compare the answer by program (layer 2), then continue the agent's own
+  conversation with one message (layer 3), before redoing the whole task (layer 4). Per-task `"layers"`, per-layer
+  statistics (`ladder_report`), `orchestrate --reapply --layers`. Off unless configured. A race in which main moved
+  again while the model answered, found by the tests, is closed. `CliWorker` and the new `CliModel` read token use from
+  `claude -p --output-format json`. With `eco` and `quality`, layer 2 cut total tokens by 55 to 65% on the racing
+  suites; layer 3 did not pay off and stays off by default. `OpenAICompatModel(extra=...)` passes extra request fields
+  (layer 2 asks with `reasoning_effort: none`).
+
 ## 1.0.0
 
 The first complete version: a strongly consistent shared trunk for several AI agents, from the replicated store
