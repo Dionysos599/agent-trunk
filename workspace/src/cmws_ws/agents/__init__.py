@@ -2,6 +2,7 @@
 
 from .llm import ChatModel, ModelError, OpenAICompatModel, Reply, ScriptedModel, ToolCall, Usage
 from .graph import InvalidGraph, TaskGraph
+from .batch import BatchQueue
 from .mergequeue import (CommandValidator, Escalations, FnValidator, Landing, MergeQueue, Verdict, merger_worker)
 from .orchestrator import Orchestrator, RunSummary, run_status
 from .planner import LLMPlanner, PlanError, StaticPlanner
@@ -14,4 +15,4 @@ __all__ = ["ChatModel", "ModelError", "OpenAICompatModel", "Reply", "ScriptedMod
            "Usage", "Toolbox", "CliWorker", "LoopWorker", "Task", "Worker", "WorkerResult",
            "run_task", "InvalidGraph", "TaskGraph", "LLMPlanner", "PlanError", "StaticPlanner",
            "Outcome", "RunReport", "Scheduler", "CommandValidator", "Escalations", "FnValidator", "Landing",
-           "MergeQueue", "Verdict", "merger_worker", "Orchestrator", "RunSummary", "run_status", "Session"]
+           "MergeQueue", "BatchQueue", "Verdict", "merger_worker", "Orchestrator", "RunSummary", "run_status", "Session"]

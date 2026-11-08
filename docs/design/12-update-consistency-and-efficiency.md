@@ -1,7 +1,7 @@
 # Update 1.1: consistency and efficiency
 
-**Status: U1 to U4 are implemented and tested (sections 6.1 and 6.2 say what was built, where it differs from the plan,
-and what the tests cover); U5 to U7 are still plans.** It is an update patch on top of tag `v1.0.0`: it says what
+**Status: U1 to U7 are implemented and tested (sections 6.1 to 6.5 say what was built, where it differs from the plan,
+and what the tests cover). Not built: speculative validation, impact-limited validation and sparse folders (section 6.3).** It is an update patch on top of tag `v1.0.0`: it says what
 changes, why, how each change is checked, and in what order. Numbers quoted as measurements in sections 1 to 5 were
 taken on the 1.0 code and are marked as such; the measurements of the new code are in `docs/eval/results.md`.
 
@@ -323,9 +323,9 @@ speedup) and the `claude` command line in small samples; every table says how ma
 | U2 (done) | merge policies (`relative`, `converge`, `append`) in the merge engine, tasks and the MCP server | the demo's syncs fall from 24 to about zero with the two shared files declared `append` and nothing lost; property tests and the mutation sweep pass |
 | U3 (done) | survival check and transition checks | the counter case is refused with no tokens; a merger keeping one side is refused; a check that cannot fail is reported |
 | U4 (done; Claude measurement pending) | the ladder: re-apply and compare (after the probe), incremental continuation | tokens per resolution against full redo are measured by layer; silent-loss columns do not move |
-| U5 | width cap, hedging, shared context, speculative queue | scaling curves and token ratios for the three workloads, simulated and, where possible, real |
-| U6 | orchestrator tools and the digest | orchestrator tokens against merging in its own context, on the same tasks |
-| U7 | replay study of real history; the cost-against-loss figure; the report | the figure, the replay classification table and the updated `docs/eval/results.md` |
+| U5 (done, except speculation) | width cap, hedging, shared context, speculative queue | scaling curves and token ratios for the three workloads, simulated and, where possible, real |
+| U6 (done) | orchestrator tools and the digest | orchestrator tokens against merging in its own context, on the same tasks |
+| U7 (done; replay sample small) | replay study of real history; the cost-against-loss figure; the report | the figure, the replay classification table and the updated `docs/eval/results.md` |
 
 U1 comes first because it needs no model and its output is the vertical axis of every later figure. U2 and U3 follow
 for the same reason. U4 waits for the probe. U5 depends on what hardware allows.
@@ -455,6 +455,63 @@ then pinned by `tests/test_u1u3_hardening.py`.
   used alone it settled 0 to 0.5 of 3 continuations per run and cost 6 to 16% more tokens than the redo in three of four
   cells (it lands stale again like any slow retry and has no retry of its own); it stays off by default. Claude has not
   been measured yet (its usage limit was reached; the probe answered 5 of 5 correctly).
+
+### 6.3 What U5 turned into: width, backups, shared context, batching
+
+* **Width cap** (`TaskGraph.width()`, `Scheduler(cap_to_width=True)`): the widest wave of the graph (tasks that depend on nothing
+  unfinished and overlap no earlier task). The scheduler never runs more agents than that. Because agents only start when a task is
+  ready this changes little in practice; it is reported (`RunReport.width`) and bounds the thread pool.
+* **Backups for stragglers** (`Scheduler(hedge_after=k, hedge_slots=1)`, `Orchestrator(hedge_after=...)`): when a running task has
+  taken more than k times the median of the tasks that landed (at least 3 of them), one backup agent starts on its own branch
+  (`<task>-hedge`). Original and backup share the task's claim and lease; a per-task gate lets one land at a time, the first to
+  land wins, and a copy that finds the task already landed is refused (a failed copy leaves the other to finish; both failing fails
+  the task once). The claim is completed once, by the scheduler, from the final outcome. A loser is not killed; the run does not wait
+  for it. Measured: tail 3.50 s to 1.59 s for 6% more agent runs. Two bugs found by measuring and fixed: the run waited for the
+  losing thread, and an original whose backup had won still counted against the width.
+* **Shared context** (`agents/context.py`, `Orchestrator(share_context=True)`): a map of the project (paths, sizes, first line, the
+  top-level names of a Python file) computed once per tree id of `main`, kept in the store, appended to every task's context. Off by
+  default; no token saving is claimed, because it was not measured here.
+* **Batched validation** (`agents/batch.py`, `BatchQueue`): branches that finish within a window are merged one after another into one
+  candidate (each checked as it joins: stale reads against the candidate so far, merge, survival, its transition checks), the
+  validator runs once on the final candidate, and `main` moves there with one compare-and-set. A branch that cannot join leaves and
+  takes the ordinary chain in its own thread; a refused batch is split in halves down to the culprit; `main` moving or a claim lost
+  while validating rebuilds the batch. `main` only holds states validated as they stand. `MergeQueue._validate` was split into
+  `_precheck` (markers, survival, checks) and `_run_validator` so that the batch can reuse each part. Measured: 15.3x at 32 agents
+  against a plain-queue ceiling of 3.6x (simulation).
+* **Tests:** 116 new (872 to 988) in the suites for batching, backups, context, the orchestrator tools, the replay and the figures. A mutation
+  sweep over `batch.py` and `context.py` killed 101 of 137 mutants, the survivors were pinned (the counters, why each branch leaves,
+  the retry hand-over) and a second sweep killed 127 of 137; the rest are the leader-election flag and early returns whose removal
+  changes nothing observable (the ordinary chain absorbs it).
+* **Not built:** speculative validation (overlapping the validation of one batch with the building of the next), impact-limited
+  validation and sparse folders. Batching alone took the serial floor from T x v to about (T / batch) x v, which was enough for the
+  target of document 13; speculation is the next step if validation is still the bottleneck.
+
+### 6.4 What U6 turned into: tools for an orchestrating agent
+
+`add_tasks` (a list of tasks with paths, dependencies, `merge`, `accept`, `layers`; validated whole, nothing stored if one is bad; at
+most 200; two orchestrators adding the same names cannot both win), `wait_for_tasks` (blocks until the named tasks, default all, are
+done, failed or blocked, up to 600 s; `any_of`; failed and blocked count as settled), `board_digest` (counts, what landed, one line per
+failure, and for each escalation the conflicting files and branch, no diffs, capped with a `truncated` flag) and
+`explain_escalation` (the full record and what the branch changed, capped). The orchestrator's own context therefore holds a short
+summary instead of diffs. **Not measured:** the orchestrator's tokens against merging in its own context, which needs a real
+orchestrating model; the tools and their behaviour are tested, the saving is not claimed.
+
+### 6.5 What U7 turned into: replay, the figure and the report
+
+`eval/replay.py` classifies the merge commits of any local git repository (disjoint, same-file clean, identical edit, structural, conflict;
+and what a read-set policy, `append` and git itself would have done). Run on the two repositories available (33 merges) it found 79%
+disjoint, 15% same-file clean, 3% identical edit, 3% conflict: an anecdote, with the command to get a real sample. The
+time-against-losses figures (`docs/eval/cost-loss.svg`, `cost-loss-eco.svg`) put the levels and the ladder on one plane, and
+`docs/eval/results.md` carries the scale, backup and replay tables. A correction was recorded there: token columns before the ladder
+section left out the tokens of redos and mergers.
+
+### 6.6 What the 32-agent runs added to the code
+
+Running 20 + 20 runs against the real cluster found two defects, now fixed (details in `docs/eval/results.md`): `MergeQueue` gained
+`backoff` (random waits between retries, growing, capped) and `starve_after` (from that attempt on, the re-application and the landing
+hold the queue's lock, which became re-entrant) and `max_reapply` is 4; `history.landed_by` finds a task's commit on `main` by its
+branch, redo or backup author, and `Scheduler(landed_check=...)` (wired by the orchestrator) uses it when a claim is taken over from a
+dead owner (epoch above 1), so a task that already landed is recorded as done instead of being run again.
 
 ## 7. Risks and open questions
 

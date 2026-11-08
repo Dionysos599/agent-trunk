@@ -30,12 +30,13 @@ cannot corrupt anything; they only cost each other a retry.
 from __future__ import annotations
 
 import json
+import random
 import re
 import subprocess
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Sequence, Set
@@ -191,13 +192,15 @@ class MergeQueue:
                  escalations: Optional[Escalations] = None, keep_both_sides: bool = True,
                  require_changes: bool = True, isolation: str = "snapshot", survival: bool = True,
                  accept_checks: bool = True, policies: bool = True, reapply: Optional[Reapplier] = None,
-                 continue_worker=None, layers: Sequence[int] = (2, 3, 4), max_reapply: int = 3) -> None:
+                 continue_worker=None, layers: Sequence[int] = (2, 3, 4), max_reapply: int = 4, starve_after: int = 2, backoff: float = 0.0) -> None:
         if isolation not in self.ISOLATIONS:
             raise ValueError(f"unknown isolation {isolation!r}; use one of {', '.join(self.ISOLATIONS)}")
         self.repo, self.validator, self.merger = repo, validator, merger
         self.isolation, self.survival = isolation, survival
         self.accept_checks, self.policies = accept_checks, policies
         self.reapply, self.continue_worker, self.max_reapply = reapply, continue_worker, max_reapply
+        self.starve_after = starve_after
+        self.backoff = backoff                          # seconds; random waits between attempts so racers spread out
         self.layers = validate_layers(list(layers)) or ()
         self.ladder: Dict[int, Dict[str, int]] = {n: {"tried": 0, "settled": 0, "tokens": 0} for n in (2, 3, 4)}
         self._stat_lock = threading.Lock()
@@ -206,7 +209,7 @@ class MergeQueue:
         self.require_changes = require_changes
         self.redo_worker, self.max_redos = redo_worker, max_redos
         self.escalations = escalations or Escalations(repo.kv)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.approved: List[str] = []                 # every candidate a validator accepted, for audit
 
     # ---- validating and landing one branch ----------------------------------------------
@@ -223,12 +226,10 @@ class MergeQueue:
                                   "this change", "main")
         return "; ".join(found)
 
-    def _validate(self, candidate: str, before_commit: Optional[str] = None, ws=None, task: Optional[Task] = None) -> Optional[str]:
-        lost = fence.check()
-        if lost is not None:
-            return lost                                  # the claim moved on: do not let this land
+    def _precheck(self, candidate: str, main: str, ws, task: Optional[Task]) -> Optional[str]:
+        """The cheap deterministic checks on a candidate built on ``main``: conflict markers, the survival check and the
+        task's transition checks. Returns a refusal, or None."""
         store = self.repo.store
-        main = before_commit or self.repo.head()
         files = self.repo.files_at(candidate)
         before = self.repo.files_at(main)
         markers = _has_new_markers(files, before)
@@ -249,13 +250,29 @@ class MergeQueue:
                 return f"the acceptance checks could not run: {type(e).__name__}: {e}"
             if failed:
                 return "acceptance check failed: " + "; ".join(failed)
+        return None
+
+    def _run_validator(self, candidate: str, main: str) -> Optional[str]:
+        """Your validation command on the whole candidate tree; refusal text or None. Records the candidate as approved."""
+        store = self.repo.store
         if self.validator is not None:
+            files = self.repo.files_at(candidate)
             changed = sorted(changed_files(store, store.get_commit(main).tree, store.get_commit(candidate).tree))
             verdict = self.validator.check(files, changed)
             if not verdict.ok:
                 return verdict.output or "validation failed"
         self.approved.append(candidate)
         return None
+
+    def _validate(self, candidate: str, before_commit: Optional[str] = None, ws=None, task: Optional[Task] = None) -> Optional[str]:
+        lost = fence.check()
+        if lost is not None:
+            return lost                                  # the claim moved on: do not let this land
+        main = before_commit or self.repo.head()
+        problem = self._precheck(candidate, main, ws, task)
+        if problem is not None:
+            return problem
+        return self._run_validator(candidate, main)
 
     def _try(self, agent_id: str, message: Optional[str]) -> SubmitResult:
         task = getattr(self._ctx, "task", None)
@@ -323,8 +340,12 @@ class MergeQueue:
                     return self._done(landing, r, "auto", agent_id)
 
         if r.status == "stale" and self._layer(task, 2) and self.reapply is not None:
-            for _ in range(self.max_reapply):                        # main may move again while the model answers
-                rr2 = self._reapply_stage(task, agent_id, r, landing, message)
+            for attempt in range(self.max_reapply):                  # main may move again while the model answers
+                self._pause(attempt)
+                # A task that keeps losing the race (a hot counter with many agents) is no longer left to chance: from its
+                # ``starve_after``-th attempt the answer and the landing happen without anyone else landing in between here.
+                with (self._lock if attempt >= self.starve_after else nullcontext()):
+                    rr2 = self._reapply_stage(task, agent_id, r, landing, message)
                 if rr2 is None:
                     break
                 if rr2.landed or rr2.status == "noop":
@@ -350,6 +371,7 @@ class MergeQueue:
 
         if self.redo_worker is not None and self._layer(task, 4):
             for n in range(1, self.max_redos + 1):
+                self._pause(n)
                 redo_id = self._redo_stage(task, n, orig_base, landing, r)
                 if redo_id is None:
                     continue
@@ -462,6 +484,11 @@ class MergeQueue:
         return redo_id if res.ok else None
 
     # ---- the cost ladder: layers 2 and 3 -----------------------------------------------------
+
+    def _pause(self, attempt: int) -> None:
+        """A random wait before the ``attempt``-th retry (none for the first), growing with the attempt number."""
+        if self.backoff > 0 and attempt > 0:
+            time.sleep(random.uniform(0, self.backoff * 2 ** min(attempt, 5)))
 
     def _layer(self, task: Task, n: int) -> bool:
         allowed = task.layers if task.layers is not None else self.layers
@@ -589,6 +616,6 @@ class MergeQueue:
 
     def as_land(self):
         """Adapter for ``Scheduler(land=...)``."""
-        def land(repo, task, result):
-            return self.land(task, result)
+        def land(repo, task, result, agent_id=None):
+            return self.land(task, result, agent_id)
         return land

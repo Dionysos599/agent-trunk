@@ -1,6 +1,6 @@
 # Target: correct at 32 agents, fast, and cheap in tokens
 
-**Status: a target and a measurement design. Nothing here is measured yet.** It fixes in advance what will be claimed, how
+**Status: measured. The reliability target (20 of 20 runs correct without and with faults) and the efficiency targets were met with scripted agents and replayed model costs; the numbers are in `docs/eval/results.md` ("Correct at 32 agents"). Where the design's own check failed (the replay does not predict real agents on one local GPU) the section "Results" says so.** It fixes in advance what will be claimed, how
 each number will be produced, and what has to be built to be able to produce it, so that no number is chosen after the fact.
 
 The two claims:
@@ -99,15 +99,33 @@ third of the workload; the policies and checks remove the shared appends from `c
 | token increase over one agent | at most 10% | 5% | report the ladder-off figure beside it |
 | token increase with the ladder off | reported | | the gap is the ladder's contribution |
 
+## Results
+
+| | target | measured |
+|---|---|---|
+| correct runs, no faults | 20/20 | **20/20** (32 agents, 1,600 edits each) |
+| correct runs, with faults | 20/20 | **20/20** (a replica of each group killed twice and one agent process, 8 agents, SIGKILLed per run) |
+| edits lost, full system | 0 | 0 silent, 0 duplicated, in 40 runs |
+| edits lost, shared folder / git-like | as measured | 404.6 / 8.4 per run silently (and 140.5 handed to a person), 0 of 20 correct each |
+| speed at 32 agents | at least 8x, stretch 15x | **17.6x** (replayed `eco` task times, real cluster); 10x to 15x when task times are compressed |
+| token increase over one agent | at most 10%, stretch 5% | **+3.3%** (uncompressed); +4.6% at 0.5 compression; +10.2% at 0.15 |
+| token increase with the ladder off | reported | +46% redone work (73 of 160 tasks redone) against +1% with the ladder |
+| replay within a margin of real agents at N = 4 | required before publishing 32-wide numbers | **not met**: the real 4-agent runs were 1.5x to 2.1x slower than the replay (one GPU shared by concurrent requests, real agents' mistakes) |
+
+The first set of 20 + 20 runs found two defects (starving tasks under a hot line; a killed owner's task run again) and ended 17 and
+14 of 20; both were fixed and the same seeds rerun (details in the results). Because the last row is not met, every speed and token
+figure here is stated as "scripted agents, costs replayed from measured `eco` runs, agents assumed to scale" and not as a measurement
+of 32 real local models.
+
 ## 5. What has to be built
 
 | # | Work | Done when |
 |---|---|---|
 | U4 (done, Claude pending) | the ladder: re-apply and compare, continue the conversation, per-task layers, per-layer statistics, `claude -p` as a model | tokens per resolution by layer measured on `eco` and `quality` (`docs/eval/results.md`: layer 2 cut tokens 55 to 65%, layer 3 did not pay off); Claude to be measured |
-| U5 | batched and speculative validation, width cap, hedging | the speed curve over 1 to 32 agents, with the validation floor visible |
-| S1 | trace recorder: per-kind task time and tokens, per-layer collision cost, from real runs | traces for Claude, then `eco` and `quality`, stored with sample counts. The per-layer collision cost of the local models is already in `workspace/eval/results/ollama_ladder.jsonl` (the `ladder` field of each row) |
-| S2 | stress harness: workload generator, 32 agent processes against the real cluster, fault injection (agents, replicas, queue), the checks of section 2, results as rows | 20 + 20 runs produce the table; a deliberately broken variant (lossy merge, no read set) fails its checks |
-| S3 | replay mode: agents that wait and spend from a trace; small-N validation against real agents | prediction within the stated margin at N = 4 and 8 |
+| U5 (done, no speculation) | batched validation, width cap, hedging | the speed curve over 1 to 32 agents, with the validation floor visible: plain queue 3.6x, batched 15.3x at 32 agents (`docs/eval/results.md`) |
+| S1 (done for `eco`, `quality`) | trace recorder: per-kind task time and tokens, per-layer collision cost, from real runs | `eval/stress/trace.py` summarises the recorded rows into `results/traces.json` (12 `eco` and 3 `quality` task samples; Claude not yet) |
+| S2 (done) | stress harness: workload generator, 32 agent processes against the real cluster, fault injection (agents, replicas, queue), the checks of section 2, results as rows | 20 + 20 runs produce the table; a deliberately broken variant (lossy merge, no read set) fails its checks |
+| S3 (done; margin not met) | replay mode: agents that wait and spend from a trace; small-N validation against real agents | prediction within the stated margin at N = 4 and 8 |
 | U6, U7 | tools for an orchestrating agent; replay of real git history | as in document 12 |
 | optional | per-key linearizability checker over recorded gateway histories | a recorded history of at least 100,000 operations passes, and an injected stale read fails |
 

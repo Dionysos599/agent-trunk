@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, Iterator, List, Set
+from typing import Dict, Iterator, List, Optional, Set
 
 from .objects import Commit, ObjectStore
 
@@ -72,3 +72,21 @@ def commits_between(store: ObjectStore, base: str, head: str) -> List[str]:
         queue.extend(store.get_commit(cid).parents)
     order.reverse()
     return order
+
+
+def landed_by(store: ObjectStore, head: str, agent_id: str) -> Optional[str]:
+    """The newest commit reachable from ``head`` made by ``agent_id`` or by one of its redo or backup branches
+    (``<id>-redo<N>``, ``<id>-hedge``), else None: whether a task already landed, whichever branch got it there.
+
+    A branch that never landed is not reachable from ``head``, so its commits are not found. Used when a task is taken over
+    from an owner that died: the dead owner may have been killed after the compare-and-set on ``main`` and before it
+    recorded that, and running the task again would apply it twice.
+    """
+    import re
+    pattern = re.compile(rf"^{re.escape(agent_id)}(-redo\d+|-hedge)?$")
+    best: Optional[str] = None
+    for cid in ancestors(store, head):
+        if pattern.match(store.get_commit(cid).author):
+            if best is None or store.get_commit(cid).timestamp > store.get_commit(best).timestamp:
+                best = cid
+    return best

@@ -75,6 +75,46 @@ class ChartTests(unittest.TestCase):
         self.assertIn("git-like", t)
         ET.fromstring(svg)
 
+    def test_scatter_places_points_by_value_and_labels_them(self):
+        svg = charts.scatter_chart("T", "s", [("low", 1.0, 0.0), ("high", 4.0, 3.0)], "cost", "loss", ymax=4)
+        root = ET.fromstring(svg)
+        pts = {c.find(NS + "title").text.split(":")[0]: (float(c.get("cx")), float(c.get("cy"))) for c in root.iter(NS + "circle")}
+        self.assertLess(pts["low"][0], pts["high"][0])                          # cheaper is further left
+        self.assertGreater(pts["low"][1], pts["high"][1])                       # fewer losses is lower
+        self.assertIn("low", texts(svg))
+        self.assertIn("high", texts(svg))
+
+    def test_scatter_with_no_points_and_with_markup_in_labels(self):
+        ET.fromstring(charts.scatter_chart("T", "s", [], "x", "y"))
+        svg = charts.scatter_chart("a<b", "s", [("x & <y>", 1, 1)], "x", "y")
+        ET.fromstring(svg)
+        self.assertIn("x & <y>", texts(svg))
+
+    def test_cost_loss_figures_use_the_counter_suite_only(self):
+        lv = [dict(suite="counter", strategy="gitlike", seconds=0.6, lost_updates=2.8),
+              dict(suite="counter", strategy="forkmerge", seconds=1.5, lost_updates=0.0),
+              dict(suite="shared", strategy="gitlike", seconds=9.0, lost_updates=9.0)]
+        ld = [dict(suite="counter", tag="reapply-oracle", seconds=0.5, lost_updates=0.0)]
+        t = texts(charts.fig_cost_loss(lv, ld))
+        self.assertIn("git-like", t)
+        self.assertIn("+ ladder layer 2", t)
+        self.assertNotIn("9", [x for x in t if x == "9"])
+        eco = [dict(suite="counter", strategy="gitlike", tokens=18000, lost_updates=3.0)]
+        lad = [dict(suite="counter", tag="eco-redo", tokens=57000, lost_updates=0.0),
+               dict(suite="counter", tag="eco-layer2", tokens=20000, lost_updates=0.0)]
+        t = texts(charts.fig_cost_loss_eco(eco, lad))
+        self.assertIn("+ ladder layer 2", t)
+
+    def test_scale_figure_draws_both_queues_and_the_ideal(self):
+        rows = [dict(mode=m, tasks=48, validate=0.03, agents=n, seconds=sec) for n, p, b in ((1, 7.0, 9.0), (8, 2.0, 1.3), (32, 2.0, 0.5))
+                for m, sec in (("plain", p), ("batched", b))]
+        svg = charts.fig_scale_batch(rows)
+        t = texts(svg)
+        self.assertIn("batched queue", t)
+        self.assertIn("ideal", t)
+        self.assertTrue(any("1 validation per landing" in x for x in t))
+        ET.fromstring(svg)
+
     def test_levels_figure_with_no_rows_is_still_valid(self):
         ET.fromstring(charts.fig_levels([]))
 
@@ -82,7 +122,8 @@ class ChartTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = charts.main(Path(tmp))
             names = sorted(p.name for p in paths)
-            self.assertEqual([n for n in names if n != "levels.svg"], ["lost-updates.svg", "mixed-agents.svg", "redo-budget.svg", "scaling.svg"])
+            optional = ("levels.svg", "cost-loss.svg", "cost-loss-eco.svg", "scale-batch.svg")
+            self.assertEqual([n for n in names if n not in optional], ["lost-updates.svg", "mixed-agents.svg", "redo-budget.svg", "scaling.svg"])
             self.assertEqual("levels.svg" in names, bool(charts.load("oracle_levels.jsonl")))
             for p in paths:
                 root = ET.fromstring(p.read_text())

@@ -32,6 +32,19 @@ is checked for lost work without spending a model token.
   suites; layer 3 did not pay off and stays off by default. `OpenAICompatModel(extra=...)` passes extra request fields
   (layer 2 asks with `reasoning_effort: none`).
 
+* **Many agents**: `BatchQueue` lands branches that finish together with one validation (15x at 32 agents in the simulation,
+  against a plain-queue ceiling of 3.6x); backups for stragglers (`hedge_after`); the width of a task graph and a cap on agents;
+  a shared project map (`share_context`). `MergeQueue._validate` is split into `_precheck` and `_run_validator`.
+* **Orchestrator tools** in the MCP server: `add_tasks`, `wait_for_tasks`, `board_digest`, `explain_escalation`.
+* **Replay of git history** (`eval/replay.py`) and time-against-losses figures; a correction to the earlier token columns (redo and
+  merger tokens were not counted before the ladder section).
+
+* **Stress harness** (`workspace/eval/stress`): a seeded workload of 160 tasks and 1,600 edits, 32 scripted agents in 4 processes
+  on the real cluster, fault injection (replicas, an agent process), correctness decided by program, baselines, a trace recorder and
+  replay of recorded `eco`/`quality` costs, and a small real-agent check. 20/20 correct runs without and with faults; 17.6x faster than
+  one agent for +3.3% tokens in the replay. Two defects it found are fixed: a task starving under a hot line (random backoff, larger
+  budget, `MergeQueue(starve_after=)`) and a killed owner's task being run twice (`history.landed_by`, `Scheduler(landed_check=)`).
+
 ## 1.0.0
 
 The first complete version: a strongly consistent shared trunk for several AI agents, from the replicated store

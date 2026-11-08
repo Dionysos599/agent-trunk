@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from cmws_ws.agents import ChatModel, ModelError, Task, Toolbox, WorkerResult
 from cmws_ws.agents.worker import SYSTEM, task_prompt
 
-REDO = re.compile(r"-redo\d+$")
+REDO = re.compile(r"-(redo\d+|hedge)$")
 
 
 def base_id(agent_id: str) -> str:

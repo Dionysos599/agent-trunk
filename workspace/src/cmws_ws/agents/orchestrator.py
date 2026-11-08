@@ -23,6 +23,7 @@ from typing import Callable, Dict, List, Optional
 from .. import kvdoc
 from ..checks import check_to_dict, parse_checks
 from ..claims import TaskClaims
+from ..history import landed_by
 from ..kv import KV
 from ..leases import LeaseTable, leases_for
 from ..policy import rules_from_declaration, rules_to_declaration
@@ -95,7 +96,9 @@ class Orchestrator:
                  queue: Optional[MergeQueue] = None, owner: Optional[str] = None, parallel: int = 4,
                  claim_ttl: float = 300.0, lease_ttl: float = 900.0, poll: float = 0.05, patience: float = 60.0,
                  clock: Callable[[], float] = time.time,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep, share_context: bool = False,
+                 hedge_after: Optional[float] = None, hedge_slots: int = 1) -> None:
+        self.share_context, self.hedge_after, self.hedge_slots = share_context, hedge_after, hedge_slots
         self.repo, self.worker, self.planner = repo, worker, planner
         self.queue = queue or MergeQueue(repo)
         self.owner = owner or f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
@@ -133,13 +136,21 @@ class Orchestrator:
             graph = namespaced(run_id, graph)
         except InvalidGraph as e:
             raise ValueError(f"task names too long for run {run_id!r}: {e}") from e
+        if self.share_context:
+            from .context import shared_context
+            note = shared_context(self.repo)
+            graph = TaskGraph([Task(t.id, t.description, t.paths, (t.context + "\n\n" if t.context else "") + note,
+                                    t.depends_on, t.merge, t.accept, t.layers) for t in graph.tasks])
         scheduler = Scheduler(self.repo, leases_for(self.repo, ttl=self.lease_ttl, clock=self.clock), self.worker,
                               parallel=self.parallel, land=self.queue.as_land(), lease_ttl=self.lease_ttl,
                               poll=self.poll, patience=self.patience, sleep=self._sleep,
-                              claims=self.claims(run_id), owner=self.owner, claim_ttl=self.claim_ttl)
+                              claims=self.claims(run_id), owner=self.owner, claim_ttl=self.claim_ttl,
+                              hedge_after=self.hedge_after, hedge_slots=self.hedge_slots,
+                              landed_check=lambda t: landed_by(self.repo.store, self.repo.head(), t.id))
         raw = scheduler.run(graph)
         cut = len(run_id) + 1
-        report = RunReport({t[cut:]: o for t, o in raw.outcomes.items()}, raw.max_concurrency)
+        report = RunReport({t[cut:]: o for t, o in raw.outcomes.items()}, raw.max_concurrency, raw.width, raw.hedges,
+                           raw.hedge_wins)
         summary = RunSummary(run_id, report, resumed, self.repo.head(), report.by_status(DONE),
                              [t for t, o in report.outcomes.items() if o.status in ("failed", "rejected")],
                              report.by_status("skipped"))

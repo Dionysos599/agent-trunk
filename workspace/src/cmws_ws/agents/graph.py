@@ -85,6 +85,11 @@ class TaskGraph:
             finished.update(wave)
         return waves
 
+    def width(self) -> int:
+        """The most tasks the graph lets run together (the widest wave of ``waves``); 0 for an empty graph. More agents
+        than this can never all be busy, because the rest would wait on a dependency or on files another task holds."""
+        return max((len(w) for w in self.waves()), default=0)
+
     def descendants(self, tid: str) -> Set[str]:
         """Tasks that (transitively) depend on ``tid`` through explicit edges."""
         out: Set[str] = set()

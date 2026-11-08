@@ -875,3 +875,50 @@ class ExtraRequestFieldsTests(unittest.TestCase):
             self.assertNotIn("reasoning_effort", seen["body"])
         finally:
             srv.shutdown()
+
+
+class StarvationAndBackoffTests(unittest.TestCase):
+    def race(self, queue_kw, reapply):
+        repo, (wa, wb) = two_branches({"stats.py": b"COUNT = 0\n"}, {"stats.py": bump_text}, {"stats.py": bump_text})
+        q = MergeQueue(repo, reapply=reapply, max_redos=0, **queue_kw)
+        q.land(Task("a", "x"))
+        return repo, q
+
+    def test_a_task_that_keeps_losing_holds_the_queue_from_its_nth_attempt(self):
+        owned = []
+        outer = {}
+
+        def answer(task, path, main):
+            owned.append(outer["q"]._lock._is_owned())
+            # make main move on, so that this answer is stale and the next attempt is needed
+            o = outer["repo"].fork(f"o{len(owned)}")
+            o.write("stats.py", bump_text(o.read_text("stats.py")))
+            o.commit("o")
+            assert outer["repo"].submit(o).landed
+            return bump_text(main)
+        repo, q = self.race(dict(max_reapply=4, starve_after=2), FnReapplier(answer))
+        outer.update(q=q, repo=repo)
+        q.land(Task("b", "x"))
+        self.assertEqual(owned, [False, False, True, True])               # attempts 0 and 1 are free, 2 and 3 hold the queue
+
+    def test_starve_after_is_configurable_and_zero_means_always(self):
+        seen = []
+        repo, q = self.race(dict(starve_after=0), FnReapplier(lambda t, p, m: (seen.append(q._lock._is_owned()), bump_text(m))[1]))
+        q.land(Task("b", "x"))
+        self.assertEqual(seen, [True])
+
+    def test_backoff_waits_a_random_time_that_grows_and_never_before_the_first_try(self):
+        from unittest import mock
+        import cmws_ws.agents.mergequeue as mq
+        repo = Repository.init(MemoryKV(), {"a": b"1"})
+        q = MergeQueue(repo, backoff=0.01)
+        waits = []
+        with mock.patch.object(mq.time, "sleep", side_effect=waits.append), mock.patch.object(mq.random, "uniform", side_effect=lambda lo, hi: hi):
+            for attempt in (0, 1, 2, 3, 6, 40):
+                q._pause(attempt)
+        self.assertEqual(waits, [0.02, 0.04, 0.08, 0.32, 0.32])          # nothing for attempt 0; doubles; capped at 2**5
+        self.assertEqual(MergeQueue(repo)._pause(3), None)                # no backoff configured: no sleep at all
+
+    def test_the_defaults_are_as_before(self):
+        q = MergeQueue(Repository.init(MemoryKV(), {"a": b"1"}))
+        self.assertEqual((q.max_reapply, q.starve_after, q.backoff), (4, 2, 0.0))

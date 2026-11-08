@@ -880,7 +880,8 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(out.ok)
         self.assertEqual(silent.calls, [])
         self.assertEqual(repo.head(), main)                              # nothing was landed a second time
-        self.assertEqual(out.report.outcomes["t"].landed.status, "noop")
+        o = out.report.outcomes["t"]
+        self.assertEqual((o.status, o.reason), ("done", "landed by an earlier owner"))     # found on main before running anything
 
     def test_two_orchestrators_share_one_run(self):
         kv = MemoryKV()
@@ -1182,3 +1183,83 @@ class SchedulerClaimTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TakeoverLandedCheckTests(unittest.TestCase):
+    """An owner killed after the compare-and-set on main and before it recorded the landing: the next owner must not do it again."""
+
+    def landed_by_redo_branch(self, agent):
+        from cmws_ws.history import landed_by
+        repo = Repository.init(MemoryKV(), {"README": "x", "v.txt": "0\n"})
+        ws = repo.fork(agent)
+        ws.write("v.txt", "1\n")
+        ws.commit(agent)
+        self.assertTrue(repo.submit(ws).landed)
+        return repo, landed_by
+
+    def test_landed_by_finds_the_task_branch_its_redo_and_its_backup_and_nothing_else(self):
+        for agent, expect in (("r-t", True), ("r-t-redo2", True), ("r-t-hedge", True), ("r-t2", False), ("r-tx-redo1", False),
+                              ("other", False)):
+            repo, landed_by = self.landed_by_redo_branch(agent)
+            self.assertEqual(landed_by(repo.store, repo.head(), "r-t") is not None, expect, agent)
+
+    def test_a_branch_that_never_landed_is_not_found(self):
+        from cmws_ws.history import landed_by
+        repo = Repository.init(MemoryKV(), {"README": "x"})
+        ws = repo.fork("r-t")
+        ws.write("f", "1")
+        ws.commit("r-t")
+        self.assertIsNone(landed_by(repo.store, repo.head(), "r-t"))
+        self.assertIsNone(landed_by(repo.store, repo.head(), "nobody"))
+
+    def test_the_newest_commit_is_returned(self):
+        from cmws_ws.history import landed_by
+        repo = Repository.init(MemoryKV(), {"README": "x"})
+        tips = []
+        for i in range(3):
+            ws = repo.fork(f"r-t-redo{i}")
+            ws.write(f"f{i}", "1")
+            tips.append(ws.commit("x"))
+            self.assertTrue(repo.submit(ws).landed)
+            time.sleep(0.01)
+        self.assertEqual(landed_by(repo.store, repo.head(), "r-t"), repo.resume("r-t-redo2").head)
+
+    def test_a_takeover_of_a_task_that_a_redo_branch_already_landed_runs_nothing(self):
+        clock = Clock()
+        repo = Repository.init(MemoryKV(), {"README": "x", "v.txt": "0\n"})
+        ws = repo.fork("r-t-redo1")                               # the dead owner's redo landed, then it was killed
+        ws.write("v.txt", "1\n")
+        ws.commit("r-t-redo1")
+        self.assertTrue(repo.submit(ws).landed)
+        main = repo.head()
+        claims = TaskClaims(repo.kv, ttl=10, clock=clock, prefix="runs/r/")
+        got = claims.claim("r-t", "dead")
+        clock.t += 100                                            # its claim ran out
+        calls = []
+
+        class W:
+            name = "w"
+
+            def run(self, task, repo_, agent_id):
+                calls.append(agent_id)
+                raise AssertionError("the task must not run again")
+        out = Orchestrator(repo, W(), owner="alive", clock=clock, claim_ttl=10, poll=0.01).run("r", graph=graph(("t", ["v.txt"], [])))
+        self.assertTrue(out.ok, out.report.outcomes)
+        self.assertEqual((calls, repo.head()), ([], main))
+        self.assertEqual(TaskClaims(repo.kv, ttl=10, clock=clock, prefix="runs/r/").snapshot()["r-t"]["outcome"]["status"], "done")
+
+    def test_a_first_attempt_is_never_checked_so_nothing_is_skipped_by_mistake(self):
+        repo = Repository.init(MemoryKV(), {"README": "x"})
+        ran = []
+
+        class W:
+            name = "w"
+
+            def run(self, task, repo_, agent_id):
+                ran.append(agent_id)
+                ws = repo_.resume(agent_id)
+                ws.write("f.txt", "1")
+                return WorkerResult("done", "ok", ws.commit(agent_id), ("f.txt",))
+        out = Orchestrator(repo, W(), owner="o", poll=0.01).run("r", graph=graph(("t", ["f.txt"], [])))
+        self.assertTrue(out.ok)
+        self.assertEqual(ran, ["r-t"])

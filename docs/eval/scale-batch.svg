@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="Speedup with more agents: the validation floor and batching">
+<rect width="760" height="380" fill="#ffffff" rx="8"/>
+<text x="24" y="32" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f2933">Speedup with more agents: the validation floor and batching</text>
+<text x="24" y="52" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">48 tasks of 0.1 s, 0.03 s validation, simulated agents; speedup over the plain queue at 1 agent</text>
+<rect x="64" y="64" width="12" height="12" rx="2" fill="#4c78a8"/>
+<text x="82" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">ideal</text>
+<rect x="129" y="64" width="12" height="12" rx="2" fill="#e45756"/>
+<text x="147" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">plain queue (1 validation per landing)</text>
+<rect x="425" y="64" width="12" height="12" rx="2" fill="#54a24b"/>
+<text x="443" y="74" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#1f2933">batched queue</text>
+<line x1="64" y1="324.0" x2="720" y2="324.0" stroke="#d9dee3"/>
+<text x="56" y="328.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">0</text>
+<line x1="64" y1="266.0" x2="720" y2="266.0" stroke="#d9dee3"/>
+<text x="56" y="270.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">25</text>
+<line x1="64" y1="208.0" x2="720" y2="208.0" stroke="#d9dee3"/>
+<text x="56" y="212.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">50</text>
+<line x1="64" y1="150.0" x2="720" y2="150.0" stroke="#d9dee3"/>
+<text x="56" y="154.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">75</text>
+<line x1="64" y1="92.0" x2="720" y2="92.0" stroke="#d9dee3"/>
+<text x="56" y="96.0" text-anchor="end" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">100</text>
+<text x="64.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">1</text>
+<text x="85.2" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">2</text>
+<text x="127.5" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">4</text>
+<text x="212.1" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">8</text>
+<text x="381.4" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">16</text>
+<text x="720.0" y="344" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#52606d">32</text>
+<text x="392.0" y="366" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">agents</text>
+<text x="14" y="208.0" transform="rotate(-90 14 208.0)" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#52606d">speedup</text>
+<polyline points="64.0,321.7 85.2,319.4 127.5,314.7 212.1,305.4 381.4,286.9 720.0,249.8" fill="none" stroke="#4c78a8" stroke-width="2.5" stroke-dasharray="6 4"/>
+<polyline points="64.0,321.7 85.2,319.4 127.5,315.6 212.1,315.3 381.4,315.7 720.0,315.7" fill="none" stroke="#e45756" stroke-width="2.5"/>
+<circle cx="64.0" cy="321.7" r="4" fill="#e45756"><title>plain queue (1 validation per landing) at 1: 1.0x</title></circle>
+<circle cx="85.2" cy="319.4" r="4" fill="#e45756"><title>plain queue (1 validation per landing) at 2: 2.0x</title></circle>
+<circle cx="127.5" cy="315.6" r="4" fill="#e45756"><title>plain queue (1 validation per landing) at 4: 3.6x</title></circle>
+<circle cx="212.1" cy="315.3" r="4" fill="#e45756"><title>plain queue (1 validation per landing) at 8: 3.7x</title></circle>
+<circle cx="381.4" cy="315.7" r="4" fill="#e45756"><title>plain queue (1 validation per landing) at 16: 3.6x</title></circle>
+<circle cx="720.0" cy="315.7" r="4" fill="#e45756"><title>plain queue (1 validation per landing) at 32: 3.6x</title></circle>
+<polyline points="64.0,322.3 85.2,320.7 127.5,317.4 212.1,310.9 381.4,299.1 720.0,288.4" fill="none" stroke="#54a24b" stroke-width="2.5"/>
+<circle cx="64.0" cy="322.3" r="4" fill="#54a24b"><title>batched queue at 1: 0.7x</title></circle>
+<circle cx="85.2" cy="320.7" r="4" fill="#54a24b"><title>batched queue at 2: 1.4x</title></circle>
+<circle cx="127.5" cy="317.4" r="4" fill="#54a24b"><title>batched queue at 4: 2.9x</title></circle>
+<circle cx="212.1" cy="310.9" r="4" fill="#54a24b"><title>batched queue at 8: 5.7x</title></circle>
+<circle cx="381.4" cy="299.1" r="4" fill="#54a24b"><title>batched queue at 16: 10.7x</title></circle>
+<circle cx="720.0" cy="288.4" r="4" fill="#54a24b"><title>batched queue at 32: 15.3x</title></circle>
+</svg>

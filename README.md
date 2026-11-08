@@ -132,6 +132,13 @@ A ready-made test project with ten tasks that collide on two shared files, a set
 configuration per agent, scripted agents to try it without a model (with an optional chaos mode that kills replicas
 and an agent's server while it runs), and a checker is in [examples/mcp-demo](examples/mcp-demo). `agenttrunk export DIR` writes the files of `main` to a folder.
 
+### For an orchestrating agent
+
+A main agent that splits a goal and collects results can run its own `agenttrunk mcp` and use four more tools instead of reading diffs:
+`add_tasks` (a list of tasks with paths, dependencies, merge policies and checks), `wait_for_tasks` (block until named tasks finish, up
+to 10 minutes), `board_digest` (what landed, what failed in one line each, what needs a decision with the conflicting files) and
+`explain_escalation` (the full record of one item).
+
 ## Using the workspace from Python
 
 ```python
@@ -259,6 +266,19 @@ resolution. It still goes through every check before landing. A second layer, `c
 agent's own conversation one message instead of starting over. Both are off by default; a task can choose its layers
 (`"layers": [2, 4]`). Declaring `accept` checks is what keeps a model's wrong "it is already done" from losing work.
 
+### Many agents at once
+
+Validation is the serial part: the plain queue validates one landing at a time, so with many agents it caps the speedup however
+many there are (3.6x in the simulation). `BatchQueue(repo, validator, window=0.05, max_batch=8)` lands the branches that finish
+together with one validation and one move of `main`; a branch that cannot join (stale, conflicting, refused by a check) leaves
+the batch and takes the ordinary chain, and a refused batch is split until the bad branch is alone. `main` still only holds states
+the validator approved as they stand. In the simulation it reached 15x with 32 agents; with a single agent it only adds the wait.
+
+`Orchestrator(hedge_after=3.0)` starts one backup agent when a task has run three times as long as the median of the others; the
+first to land wins and the other is discarded, which cut a straggler-dominated run from 3.5 s to 1.6 s for 6% more agent runs.
+`Orchestrator(share_context=True)` hands every agent a map of the project computed once (not measured to save tokens). Both are
+off by default.
+
 ### Surviving crashes
 
 * Tool calls carry sequence numbers and run once; a retried call returns the recorded answer.
@@ -342,6 +362,22 @@ run once the checks described above were in place, at a few percent overhead.
 ```bash
 python3 workspace/eval/run_eval.py --backends oracle --reps 5 --out out.jsonl && python3 workspace/eval/report.py out.jsonl
 ```
+
+To see how often the cases that matter occur in real code, point the replay at any git repository with merge commits (it reads the
+history only; no model, no cost):
+
+```bash
+python3 workspace/eval/replay.py --repo /path/to/repo --limit 1000 --table
+```
+
+## Stress test at 32 agents
+
+`python -m stress cluster --runs 20 [--faults]` (run from `workspace/eval`) starts the replicated store, runs 160 generated tasks (1,600
+line edits) with 32 scripted agents in 4 processes, optionally kills replicas and an agent process meanwhile, and decides correctness by
+program: serial replay of the landed tasks, every edit exactly once, every state of `main` valid, every claim completed. 20 of 20 runs
+were correct without faults and 20 of 20 with them, where a shared folder and a git-style merge were correct in 0 of 20. With task
+costs replayed from recorded `eco` runs the same workload ran 17.6x faster than one agent for 3.3% more tokens (agents assumed to scale;
+see `docs/eval/results.md` for what that does and does not show).
 
 ## Build and test
 

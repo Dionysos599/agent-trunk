@@ -57,7 +57,9 @@ def _short(commit: Optional[str]) -> Optional[str]:
 class TrunkService:
     def __init__(self, repo: Repository, board: str = "default", owner: str = "agent", workdir: Path = Path("agenttrunk-work"),
                  queue: Optional[MergeQueue] = None, file_tools: bool = False, claim_ttl: float = 900.0,
-                 lease_ttl: Optional[float] = None, clock: Callable[[], float] = time.time) -> None:
+                 lease_ttl: Optional[float] = None, clock: Callable[[], float] = time.time,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        self._sleep = sleep
         if not RUN_ID.match(board):
             raise TrunkError(f"bad board name {board!r}: letters, digits and _, at most 32")
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", owner):
@@ -516,6 +518,117 @@ class TrunkService:
         else:
             res["next"] = f"Landing returned {r.status!r}."
         return res
+
+    # ---- for an orchestrating agent: it puts work on the board and reads results, never a diff -------
+
+    MAX_ADD = 200
+    MAX_WAIT = 600.0
+
+    def add_tasks(self, tasks: list) -> dict:
+        """Put several tasks (with paths, dependencies, merge policies and acceptance checks) on the board at once."""
+        with self._lock:
+            if not isinstance(tasks, list) or not tasks:
+                raise TrunkError("give a non-empty list of tasks")
+            if len(tasks) > self.MAX_ADD:
+                raise TrunkError(f"at most {self.MAX_ADD} tasks at a time")
+            parsed: List[Task] = []
+            for i, d in enumerate(tasks):
+                if not isinstance(d, dict) or not isinstance(d.get("id"), str) or not isinstance(d.get("description"), str):
+                    raise TrunkError(f"task {i}: needs an 'id' and a 'description' (text)")
+                try:
+                    parsed.append(task_from_dict(d))
+                except (ValueError, KeyError, TypeError, RecursionError) as e:
+                    raise TrunkError(f"task {i} ({d.get('id')!r}): {e}")
+            existing = self.tasks()
+            ids = [t.id for t in existing] + [t.id for t in parsed]
+            dup = sorted({x for x in ids if ids.count(x) > 1})
+            if dup:
+                raise TrunkError(f"task id(s) already on the board or listed twice: {', '.join(dup)}")
+            try:
+                namespaced(self.board, TaskGraph(existing + parsed))              # syntax, length, dependencies, cycles
+            except InvalidGraph as e:
+                raise TrunkError(f"cannot add these tasks: {e}")
+
+            def add(doc: list) -> str:
+                if any(d["id"] in {t.id for t in parsed} for d in doc):
+                    return "exists"                                                # someone added one of these names first
+                doc.extend(task_to_dict(t) for t in parsed)
+                return "added"
+            if kvdoc.update(self.repo.kv, self._adhoc_key, add, []) != "added":
+                raise TrunkError("another agent added a task with one of these names meanwhile; check show_board and retry.")
+            return {"ok": True, "added": [t.id for t in parsed], "warnings": self.warnings(parsed),
+                    "next": "Agents claim them with claim_task. wait_for_tasks blocks until they are done; board_digest summarises."}
+
+    def wait_for_tasks(self, task_ids: Optional[List[str]] = None, timeout: float = 60.0, any_of: bool = False,
+                       poll: float = 0.5) -> dict:
+        """Block until the named tasks (default: all) are done, failed or blocked, or ``timeout`` seconds pass."""
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+            raise TrunkError("timeout must be a number of seconds, 0 or more")
+        timeout = min(float(timeout), self.MAX_WAIT)
+        rows = {r["id"]: r for r in self.board_view()["tasks"]}
+        wanted = list(task_ids) if task_ids else sorted(rows)
+        unknown = [t for t in wanted if t not in rows]
+        if unknown:
+            raise TrunkError(f"not on the board: {', '.join(map(str, unknown))}")
+        start = self.clock()
+        while True:
+            rows = {r["id"]: r for r in self.board_view()["tasks"]}
+            settled = [t for t in wanted if rows[t]["state"] in (DONE, FAILED, BLOCKED)]
+            elapsed = self.clock() - start
+            done = bool(settled) if any_of else len(settled) == len(wanted)
+            if done or elapsed >= timeout:
+                pending = [t for t in wanted if t not in settled]
+                return {"ok": True, "timed_out": not done, "waited": round(elapsed, 2),
+                        "settled": {t: rows[t] for t in settled}, "pending": {t: rows[t] for t in pending},
+                        "next": ("All finished; board_digest summarises what landed." if not pending else
+                                 "Some are still running or waiting; call wait_for_tasks again, or board_digest to look.")}
+            self._sleep(min(poll, max(0.0, timeout - elapsed)))
+
+    def board_digest(self, max_items: int = 25) -> dict:
+        """A compact, verified summary of the board: what landed, what failed and why (one line each), and what needs a decision
+        (the conflicting files and the branch), without any diff."""
+        view = self.board_view()
+        cut = len(self.board) + 1
+        rows = view["tasks"]
+        counts: Dict[str, int] = {}
+        for r in rows:
+            counts[r["state"]] = counts.get(r["state"], 0) + 1
+        esc = [e for e in Escalations(self.repo.kv).list() if str(e.get("task", "")).startswith(self.board + "-")]
+        short = lambda t, n: (t or "").strip().splitlines()[0][:n] if (t or "").strip() else ""        # noqa: E731
+        landed = [{"id": r["id"], "by": r.get("by"), "commit": r.get("commit")} for r in rows if r["state"] == DONE]
+        failed = [{"id": r["id"], "reason": short(r.get("reason"), 120) or "failed"} for r in rows if r["state"] in (FAILED, BLOCKED)]
+        decisions = [{"escalation": e["id"], "task": e["task"][cut:], "branch": e.get("branch"), "why": e.get("reason"),
+                      "conflicts": e.get("conflicts", []), "detail": short(e.get("detail"), 200)} for e in esc]
+        active = [{"id": r["id"], "state": r["state"], "by": r.get("by"), "waiting_for": r.get("waiting_for")}
+                  for r in rows if r["state"] in (CLAIMED, "waiting", OPEN)]
+        text = [f"board {self.board}: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) + f"; main {view['main']}"]
+        text += [f"landed {x['id']} ({x['by']})" for x in landed[:max_items]]
+        text += [f"FAILED {x['id']}: {x['reason']}" for x in failed[:max_items]]
+        text += [f"NEEDS DECISION {x['escalation']} ({x['task']}): {x['why']} {x['conflicts']}" for x in decisions[:max_items]]
+        cap = lambda xs: xs[:max_items]                                                               # noqa: E731
+        return {"ok": True, "board": self.board, "counts": counts, "main": view["main"], "landed": cap(landed),
+                "failed": cap(failed), "needs_decision": cap(decisions), "active": cap(active),
+                "truncated": any(len(x) > max_items for x in (landed, failed, decisions, active)), "text": "\n".join(text),
+                "next": ("Decide the items under needs_decision (explain_escalation gives the full record)."
+                         if decisions else "Nothing needs a decision." if not failed else
+                         "Failed tasks can be re-added with add_tasks under new ids, or fixed by a person.")}
+
+    def explain_escalation(self, escalation_id: str) -> dict:
+        """The full record of one escalated item, with what its branch changed relative to main (capped)."""
+        for e in Escalations(self.repo.kv).list():
+            if e.get("id") == escalation_id:
+                out = {"ok": True, "record": e}
+                branch = str(e.get("branch", ""))
+                try:
+                    ws = self.repo.resume(branch[3:] if branch.startswith("ws/") else branch)
+                    store = self.repo.store
+                    diff = unified_all(store, store.get_commit(ws.fork_base).tree, store.get_commit(ws.head).tree)
+                    out["branch_changes"] = diff[:CAP] + ("\n[... cut off]" if len(diff) > CAP else "")
+                except (NoSuchWorkspace, Exception):                   # noqa: BLE001 - the record is the answer even if the branch is gone
+                    out["branch_changes"] = ""
+                out["next"] = "Decide, then add_tasks a replacement (or fix the branch by hand); the record stays in list_escalations."
+                return out
+        raise TrunkError(f"no escalation {escalation_id!r}; list_escalations shows what exists.")
 
     # ---- the people side -----------------------------------------------------------------
 

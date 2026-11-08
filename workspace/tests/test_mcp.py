@@ -645,7 +645,8 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_the_tool_set(self):
         names = [t["name"] for t in self.srv.handle(rpc("tools/list"))["result"]["tools"]]
         self.assertEqual(names, ["show_board", "claim_task", "task_status", "sync_with_main", "submit_task",
-                                 "release_task", "list_escalations"])
+                                 "release_task", "add_tasks", "wait_for_tasks", "board_digest", "explain_escalation",
+                                 "list_escalations"])
         files = build_server(self.env.svc("bob", file_tools=True))
         self.assertEqual([t["name"] for t in files.handle(rpc("tools/list"))["result"]["tools"]][-6:],
                          list(TrunkService.FILE_TOOLS))

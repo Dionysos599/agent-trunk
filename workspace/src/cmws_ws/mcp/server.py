@@ -73,6 +73,20 @@ def build_server(service: TrunkService) -> McpServer:
                       call(lambda message=None: service.submit(message))))
     srv.add_tool(Tool("release_task", "Give up your task without landing it, so another agent can take it. Your branch is kept.",
                       _schema({"reason": _S}), call(lambda reason="": service.release(reason))))
+    srv.add_tool(Tool("add_tasks", "For an orchestrating agent: put several tasks on the board at once. Each task is an object with id, "
+                      "description, and optionally paths, depends_on, merge (path -> relative|converge|append), accept (checks) and layers.",
+                      _schema({"tasks": {"type": "array", "items": {"type": "object"}, "description": "the tasks"}}, ["tasks"]),
+                      call(lambda tasks: service.add_tasks(tasks))))
+    srv.add_tool(Tool("wait_for_tasks", "Block until the named tasks (default: all on the board) are done, failed or blocked, or until "
+                      "timeout seconds (at most 600) pass. With any_of, return as soon as one is settled.",
+                      _schema({"task_ids": {"type": "array", "items": _S}, "timeout": {"type": "number"}, "any_of": {"type": "boolean"}}),
+                      call(lambda task_ids=None, timeout=60, any_of=False: service.wait_for_tasks(task_ids, timeout, any_of))))
+    srv.add_tool(Tool("board_digest", "A compact summary of the board: what landed, what failed and why in one line each, and what needs "
+                      "a decision with the conflicting files; no diffs.", _schema({"max_items": {"type": "integer"}}),
+                      call(lambda max_items=25: service.board_digest(max_items))))
+    srv.add_tool(Tool("explain_escalation", "The full record of one escalated item (from board_digest's needs_decision) with what its "
+                      "branch changed.", _schema({"escalation_id": _S}, ["escalation_id"]),
+                      call(lambda escalation_id: service.explain_escalation(escalation_id))))
     srv.add_tool(Tool("list_escalations", "Work the system could not land and left for a person.", _schema({}),
                       call(lambda: service.escalations())))
 

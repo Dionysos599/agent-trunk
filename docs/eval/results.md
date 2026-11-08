@@ -257,6 +257,177 @@ PYTHONPATH=workspace/src python3 workspace/eval/run_eval.py --suites counter,sha
 python3 workspace/eval/report.py workspace/eval/results/claude_ladder.jsonl
 ```
 
+## Correct at 32 agents, and how much faster and cheaper (stress harness)
+
+`workspace/eval/stress/` (`python -m stress cluster|inproc|efficiency|real_agents`, designed in `docs/design/13-scale-and-cost-target.md`).
+
+**Workload.** One generated project and 160 tasks of 10 line edits each (1,600 edits per run), seeded: 55% write their own
+file, 25% append to 1 of 4 shared files, 12% add to 6 hot counters and a TOTAL line, 8% bump one VERSION line. Every written line is
+unique; the right answer is known exactly, and the validator holds an invariant on every candidate state (TOTAL is the sum of the
+counters, no line twice, no conflict markers). Tasks declare only their own file, as a planner that missed the overlap would, so
+colliding tasks run at the same time.
+
+**Agents and store.** 32 scripted agents (deterministic programs, not models) as 4 OS processes of 8 threads, against the real
+replicated store: the Java cluster behind the HTTP gateway, 2 shard groups of 3 replicas. The full system: merge policies, survival and
+transition checks, the cost ladder (layer 2 answered perfectly by the task's own edit), batched validation, claims and leases.
+
+**A run is correct only if** the final tree equals the serial replay of the landed tasks in landing order; every one of the 1,600 edits
+is present exactly once and the counters and version are exact; every commit reachable from `main` satisfies the invariant (checked after
+the run, over the whole history); the landing commits form one chain; every task's claim ended completed as done.
+
+| 20 runs each, 32 agents, 1,600 edits per run | correct runs | silent lost edits | duplicated edits | serial replay | every state of `main` valid |
+|---|---|---|---|---|---|
+| no faults | **20 / 20** | 0 | 0 | 20 / 20 | 20 / 20 |
+| with faults | **20 / 20** | 0 | 0 | 20 / 20 | 20 / 20 |
+
+Faults in the second set, at random moments of each run: one replica of each shard group killed and revived twice (80 replica kills
+in all, never two of one group at once) and one whole agent process killed with SIGKILL mid-task and restarted under a new name (8
+agents per kill, 160 agents killed in all); its tasks were taken over once their claims expired. Runs took about 9 s.
+
+**The first attempt was not 20 and 20.** 17 of 20 without faults and 14 of 20 with faults ended correct (`stress_cluster_first_attempt.jsonl`).
+No edit was lost silently in any of those runs and every state of `main` was valid, but two defects showed:
+(1) a hot counter or version line raced by 30 agents could starve a task: it lost the race to every retry and was handed to a person
+(1 to 2 tasks in 3 of the 20 clean runs, and in some faulted ones); (2) when a process was killed after the compare-and-set on `main` but
+before it recorded the landing, the next owner ran the task again: in 6 faulted runs a task whose edit was on `main` was recorded as
+escalated, and in one run two version bumps were applied twice (a task landed twice).
+Fixes, each tested: random backoff between retries and a larger budget, and a task that has lost twice holds the queue for its next
+attempt; a takeover first looks on `main` for a commit by the task's branch, its redo or its backup (`history.landed_by`) and, if found,
+records the task as done without running it. The same seeds were then rerun: the table above.
+
+**Baselines on the same workload** (20 runs each, 32 agents, in memory, same checks):
+
+| level | correct runs | silent lost edits per run | edits handed to a person | serial replay | extra agent runs (redone work) |
+|---|---|---|---|---|---|
+| shared folder | 0 / 20 | 404.6 | 0 | n/a | 0 |
+| git-like (text merge + validation) | 0 / 20 | 8.4 | 140.5 | 0 / 20 | 0 |
+| 1.0 (read set) + redo | 20 / 20 | 0 | 0 | 20 / 20 | 73 (+46%) |
+| + checks and policies, redo | 20 / 20 | 0 | 0 | 20 / 20 | 73 (+46%) |
+| + cost ladder | 20 / 20 | 0 | 0 | 20 / 20 | **1.6 (+1%)** |
+| + batched validation | 20 / 20 | 0 | 0 | 20 / 20 | 17.9 (+11%) |
+
+A deliberately weakened system fails its checks, as it must: git-like ends serializable in 0 of 20 runs and a shared folder loses
+about 400 of 1,600 edits. Given enough redos the 1.0 level is also correct; what the ladder buys is the 46% of redone work.
+
+### Speed and tokens at 32 agents against one agent (replayed from real model runs)
+
+One agent (1 process, 1 thread, the plain queue) does the 160 tasks one after another; 32 agents (4 x 8, batched queue, ladder) do the
+same tasks on the real cluster. Every task takes the recorded seconds and tokens of a real `eco` (or `quality`) task from the earlier runs
+(the same sample for the same task in both runs, so the work is identical), a collision costs what the recorded ladder runs cost (about
+180 tokens per layer-2 answer, about 4,300 per redo), and the validation takes 5% of a task's time (15% in one row). `compress`
+multiplies every replayed duration; coordination is not compressed, so **compressed rows understate the speedup**.
+
+| model | compress | validation | one agent | 32 agents | speedup | tokens vs one agent |
+|---|---|---|---|---|---|---|
+| `eco` | 1.0 (real task times, about 6.4 s) | 5% | 1,096 s | 62.1 s | **17.6x** | **+3.3%** |
+| `eco` | 0.5 | 5% | 561 s | 37.5 s | 15.0x | +4.6% |
+| `eco` | 0.15 | 5% | 187 s | 18.3 s | 10.2x | +10.2% |
+| `eco` | 0.15 | 15% | 202 s | 33.6 s | 6.0x | +20.7% |
+| `quality` | 0.15 | 5% | 177 s | 18.4 s | 9.6x | +9.7% |
+
+(1 run of the single agent, 2 to 3 runs of 32 agents per row; every run correct.) The speedup grows and the token cost falls as the
+replay gets closer to real task times, because collisions become rarer when tasks are long. The floor under all of these is the cost of
+landing on the replicated store, about 0.1 s of coordination per landing (160 landings), which no number of agents removes. The layer-2
+answers are the task's own edit (always right), so a real model's wrong answers are not in the token figure.
+
+### Does the replay predict real agents?
+
+Not on this hardware. Twelve small real tasks (the tool loop over `eco`, described in words) with 1 and with 4 real agents, then a replay
+of the recorded per-task times at the same number of agents: the single real agent took 71 s and the 4-agent replay predicted 24 s
+(3.0x); the real 4-agent runs took 36 s and 50 s (2.0x and 1.4x), with 82,000 and 128,000 tokens against 104,000 for one agent. The
+real runs were slower than the replay predicted for reasons the replay does not contain: one local model server shares its GPU between
+concurrent requests, and real agents make mistakes and redo work. (The real runs also failed the strict serial-replay check, because
+a model does not write byte-identical text; no edit was lost or duplicated in the 4-agent runs.) So **the 17.6x is for agents whose
+throughput scales** (API-backed models, or enough GPUs), measured with scripted agents and replayed costs; it is not a measurement of
+32 real local models, and one local server does not deliver it.
+
+## Many agents: the validation floor, batching, and backups for stragglers (simulation)
+
+`workspace/eval/scale.py`: T independent tasks (each writes its own file), N agents, a validator that takes `v` seconds and a
+task that takes `t` seconds. **Perfect agents with simulated latency: this says what the coordination does to time, nothing
+about a model.** Speedup is against the plain queue with one agent.
+
+![Speedup with more agents, plain and batched queue](scale-batch.svg)
+
+| agents | plain queue: seconds, speedup | batched queue: seconds, speedup | validations (plain / batched) |
+|---|---|---|---|
+| 1 | 7.08 s, 1.0x | 9.73 s, 0.7x | 48 / 48 |
+| 2 | 3.58 s, 2.0x | 4.94 s, 1.4x | 48 / 24 |
+| 4 | 1.94 s, 3.6x | 2.47 s, 2.9x | 48 / 12 |
+| 8 | 1.94 s, 3.6x | 1.27 s, **5.6x** | 48 / 6 |
+| 16 | 1.97 s, 3.6x | 0.66 s, **10.7x** | 48 / 3 |
+| 32 | 1.98 s, 3.6x | 0.46 s, **15.3x** | 48 / 4 |
+
+(48 tasks, t = 0.1 s, v = 0.03 s; 2 runs per cell.) A second setting with a slower validator (32 tasks, t = 0.2 s, v = 0.1 s):
+plain 2.8x at 4, 16 and 32 agents; batched 3.4x, 13.2x and **20.2x**.
+
+* **The floor is real.** The plain queue stops at 3.6x (2.8x with the slow validator) from 4 agents on, however many
+  there are: validations are one after another, so T x v is a floor under the run (48 x 0.03 = 1.4 s of 1.9 s). This is the
+  limit predicted in document 13, `(t+v)/v`.
+* **Batching moves it.** Branches that finish within the window share one validation: 48 landings needed 3 to 6
+  validations instead of 48, and every run ended with all tasks landed. At 32 agents: 15.3x and 20.2x, above the 8x target
+  of document 13 (stretch 15x).
+* **It costs something at low width:** with one agent the 50 ms wait for company is pure delay (0.7x). Batching is for many agents.
+* Guarantees under batching (tested in `tests/test_batch.py`): `main` only holds states the validator approved as they stand
+  (checked over every state `main` ever held, including runs where branches were refused); a branch that is stale, conflicting,
+  or refused by its checks leaves the batch and goes through the ordinary chain; one bad branch among eight cost 3 to 7
+  validations instead of one, and the other seven still landed; a claim lost during validation or `main` moving meanwhile
+  rebuilds the batch.
+* Not built: *speculative* validation (validating the next batch on top of the one still being validated). Batching already
+  turns the floor from T x v into about (T / batch size) x v; speculation would overlap those, and was left out.
+
+### Backups for stragglers
+
+48 tasks, 8 agents, 3 tasks (of 48) that take 30 times too long on their first agent (3 s each), batched queue:
+
+| | seconds | agent runs (tokens) | backups started / won |
+|---|---|---|---|
+| no backups | 3.50 | 48 (48,000) | 0 / 0 |
+| backup after 3 x the median of the others | **1.59** | 51 (51,000) | 3 / 3 |
+
+The tail shrank to 45% for 6% more agent runs (tokens rise only where time is lost). The slow original is not killed (a thread
+cannot be); its result is discarded and the landing gate refuses it. When there are no stragglers no backup is started
+(tested), and with a task that is merely slow-ish the backup and the original racing to land is tested to land it once.
+
+## What real merge history says (git replay, no model)
+
+`workspace/eval/replay.py --repo PATH` takes every two-parent merge commit as two pieces of concurrent work and classifies it
+with this project's text merge. Two small local repositories were available (151 and 46 commits; no pull-request data):
+
+| 33 merge commits | pairs | share |
+|---|---|---|
+| the sides changed different files | 26 | 79% |
+| the same file, text merge clean | 5 | 15% |
+| the same change on both sides (identical edit) | 1 | 3% |
+| textual conflict (git needs a person) | 1 | 3% |
+| a folder agent's read set would refuse (git accepted) | 6 | 18% |
+| conflicts that `append` alone would resolve | 0 of 1 | |
+| the committed merge differs from the clean text merge | 0 | 0% |
+
+Read this for what it is: **33 pairs from two small repositories is an anecdote, not a result.** It does say that in real
+human-sized history most concurrent work is on different files (79%), that same-file clean merges are common enough that a
+policy treating every changed file as a stale read would redo about a sixth of the merges (which is why the declared policies
+exist), and that the dangerous case (identical edits, the counter) did occur once in 33. Nothing here says how often a clean
+merge fails the repository's tests (that needs the project's test command). To get a sample worth quoting, run the tool on
+a large repository with many merges: `git clone <repo> /tmp/r && python3 workspace/eval/replay.py --repo /tmp/r --limit 1000 --table`.
+
+## Time against losses: the figure
+
+![Updates lost against time, by level](cost-loss.svg)
+
+![Updates lost against tokens, eco](cost-loss-eco.svg)
+
+On the counter suite the levels spread along the cost axis the way document 12 predicted: the shared folder and git-like are
+cheap and lose 3 of 5 updates; the read set and the checks lose none and cost three times the time (every collision is a
+redo); **the ladder's first layer reaches zero losses at the cost of the cheap end** (0.55 s against 0.60 s with perfect
+agents; 20,232 tokens against git-like's 18,127 with `eco`, where the redo-only level needs 57,411).
+
+### A correction to earlier token columns
+
+The `tokens` columns of the tables before the cost-ladder section count only each task's *first* attempt, not the tokens of
+redos or merger agents (the queue did not report them). Totals from the ladder section on include everything. The earlier
+rows therefore understate the cost of the levels that redo work (the `forkmerge`, `serializable` rows of the real-model
+tables), and `gitlike`, which never redoes, is unaffected. No conclusion about lost updates is affected.
+
 ## Results with a real model (`eco`, 9B, 3 runs per cell)
 
 | tag | suite | strategy | runs | all correct | tasks satisfied | lost updates | main broken | conflicts | human escalations | seconds | tokens |

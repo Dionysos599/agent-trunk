@@ -28,6 +28,10 @@ who can use it and how reliably.
 | `sync_with_main` | merge `main` into the branch and the folder |
 | `submit_task` | validated landing, completes the claim |
 | `release_task` | give the task back (the branch is kept) |
+| `add_tasks` | for an orchestrating agent: put several tasks on the board at once (paths, dependencies, merge policies, acceptance checks, layers) |
+| `wait_for_tasks` | block until named tasks (default all) are done, failed or blocked, or a timeout (at most 600 s) |
+| `board_digest` | counts, what landed, one line per failure, and what needs a decision with the conflicting files; no diffs |
+| `explain_escalation` | the full record of one escalated item and what its branch changed |
 | `list_escalations` | what the system left for a person |
 
 Every result carries `ok` and a `next` sentence. A failed call is an MCP error result (`isError`) with the

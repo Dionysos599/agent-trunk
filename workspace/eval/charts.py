@@ -10,6 +10,10 @@ Reads the recorded runs in workspace/eval/results/*.jsonl and writes one SVG per
   mixed-agents.svg    updates lost per run with a local model plus the claude command line, before and after
                       each of the three fixes
   levels.svg          share of runs that are equivalent to a serial execution, by isolation level (perfect agents)
+  scale-batch.svg     speedup against the number of agents, plain and batched merge queue (simulated agents)
+  cost-loss.svg       updates lost per run against seconds per run, one point per level or mechanism (perfect agents,
+                      the counter suite)
+  cost-loss-eco.svg   the same against tokens per run (eco, the counter suite)
 """
 
 from __future__ import annotations
@@ -174,6 +178,79 @@ def fig_redo(rows: List[dict]) -> str:
                       ymax=100, fmt="{:.0f}%")
 
 
+def fig_scale_batch(rows: List[dict]) -> str:
+    sel = [r for r in rows if r.get("mode") in ("plain", "batched") and r.get("tasks") == 48 and r.get("validate") == 0.03]
+    ns = sorted({r["agents"] for r in sel})
+    base = st.mean(r["seconds"] for r in sel if r["mode"] == "plain" and r["agents"] == ns[0])
+    series = {"ideal": [n / ns[0] for n in ns]}
+    for mode, label in (("plain", "plain queue (1 validation per landing)"), ("batched", "batched queue")):
+        series[label] = [base / st.mean(r["seconds"] for r in sel if r["mode"] == mode and r["agents"] == n) for n in ns]
+    return line_chart("Speedup with more agents: the validation floor and batching",
+                      "48 tasks of 0.1 s, 0.03 s validation, simulated agents; speedup over the plain queue at 1 agent",
+                      ns, series, "agents", "speedup", ymax=_nice_max(max(max(v) for v in series.values())), dashed=("ideal",),
+                      fmt="{:.1f}x")
+
+
+def scatter_chart(title: str, subtitle: str, points: Sequence[Tuple[str, float, float]], xlabel: str, ylabel: str,
+                  xfmt: str = "{:g}", ymax: float = 0) -> str:
+    """One labelled point per (label, x, y); the lower left corner is best when both axes are costs."""
+    W, H, left, right, top, bottom = 760, 380, 64, 150, 70, 56
+    pw, ph = W - left - right, H - top - bottom
+    xmax = _nice_max(max((p[1] for p in points), default=1))
+    top_val = ymax or _nice_max(max((p[2] for p in points), default=1))
+    body: List[str] = []
+    for i in range(5):
+        y = top + ph - ph * i / 4
+        body.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + pw}" y2="{y:.1f}" stroke="{GRID}"/>')
+        body.append(f'<text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end" {FONT} font-size="11" fill="{MUTED}">{top_val * i / 4:g}</text>')
+        x = left + pw * i / 4
+        body.append(f'<text x="{x:.1f}" y="{H - bottom + 20}" text-anchor="middle" {FONT} font-size="11" fill="{MUTED}">{xfmt.format(xmax * i / 4)}</text>')
+    body.append(f'<text x="{left + pw / 2}" y="{H - 14}" text-anchor="middle" {FONT} font-size="12" fill="{MUTED}">{escape(xlabel)}</text>')
+    body.append(f'<text x="14" y="{top + ph / 2}" transform="rotate(-90 14 {top + ph / 2})" text-anchor="middle" {FONT} font-size="12" fill="{MUTED}">{escape(ylabel)}</text>')
+    for i, (label, x, y) in enumerate(points):
+        cx, cy = left + pw * x / xmax, top + ph - ph * y / top_val
+        col = PALETTE[i % len(PALETTE)]
+        body.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="6" fill="{col}"><title>{escape(label)}: {xfmt.format(x)}, {y:g}</title></circle>')
+        body.append(f'<text x="{cx + 9:.1f}" y="{cy + 4:.1f}" {FONT} font-size="11" fill="{INK}">{escape(label)}</text>')
+    return _svg(W, H, title, body, subtitle)
+
+
+def _mean_by(rows: List[dict], key: str, **where) -> float:
+    sel = [r for r in rows if all(r.get(k) == v for k, v in where.items())]
+    return mean(sel, key)
+
+
+def fig_cost_loss(levels: List[dict], ladder: List[dict]) -> str:
+    """Perfect agents, counter suite: each isolation level and the cost ladder as a point of seconds against lost updates."""
+    pts = []
+    for strat, label in (("naive", "shared folder"), ("gitlike", "git-like"), ("forkmerge", "+ read set (1.0)"),
+                         ("gitlike-checks", "git-like + checks"), ("serializable", "serializable")):
+        sel = [r for r in levels if r["suite"] == "counter" and r["strategy"] == strat]
+        if sel:
+            pts.append((label, mean(sel, "seconds"), mean(sel, "lost_updates")))
+    sel = [r for r in ladder if r["suite"] == "counter" and r["tag"] == "reapply-oracle"]
+    if sel:
+        pts.append(("+ ladder layer 2", mean(sel, "seconds"), mean(sel, "lost_updates")))
+    return scatter_chart("Updates lost against time, by level (perfect agents)",
+                         "counter suite: 5 tasks each add 1 to one line; 10 runs per point; lower left is better", pts,
+                         "seconds per run (simulated agent latency)", "updates lost per run", xfmt="{:.1f}", ymax=4)
+
+
+def fig_cost_loss_eco(eco_levels: List[dict], ladder: List[dict]) -> str:
+    """eco on the counter suite: total tokens per run against lost updates."""
+    pts = []
+    sel = [r for r in eco_levels if r["suite"] == "counter" and r["strategy"] == "gitlike"]
+    if sel:
+        pts.append(("git-like", mean(sel, "tokens"), mean(sel, "lost_updates")))
+    for tag, label in (("eco-redo", "read set + redo (1.0)"), ("eco-layer2", "+ ladder layer 2"), ("eco-layer3", "layer 3 only")):
+        sel = [r for r in ladder if r["suite"] == "counter" and r["tag"] == tag]
+        if sel:
+            pts.append((label, mean(sel, "tokens"), mean(sel, "lost_updates")))
+    return scatter_chart("Updates lost against tokens (eco 9B)",
+                         "counter suite: 5 racing tasks; tokens include redos and layer 2; 3 to 4 runs per point", pts,
+                         "total tokens per run", "updates lost per run", xfmt="{:,.0f}", ymax=4)
+
+
 def fig_mixed() -> str:
     stages = [("first run", "mixed_eco_claude.jsonl"), ("merger guard +\nassumed reads", "mixed_eco_claude_after_fixes.jsonl"),
               ("+ no empty 'done'", "mixed_eco_claude_after_fixes2.jsonl")]
@@ -218,9 +295,17 @@ def main(out: Path) -> List[Path]:
         "redo-budget.svg": fig_redo(load("oracle_redos.jsonl")),
         "mixed-agents.svg": fig_mixed(),
     }
+    scale = load("scale.jsonl")
+    if any(r.get("mode") == "batched" for r in scale):
+        figs["scale-batch.svg"] = fig_scale_batch(scale)
     levels = load("oracle_levels.jsonl")
     if levels:
         figs["levels.svg"] = fig_levels(levels)
+        ladder = load("oracle_ladder.jsonl")
+        figs["cost-loss.svg"] = fig_cost_loss(levels, ladder)
+    eco, lad = load("ollama_eco_levels.jsonl"), load("ollama_ladder.jsonl")
+    if eco and lad:
+        figs["cost-loss-eco.svg"] = fig_cost_loss_eco(eco, lad)
     paths = []
     for name, svg in figs.items():
         p = out / name
