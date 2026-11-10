@@ -244,18 +244,30 @@ and returned nothing for the longer file (12 of 19 answers on `shared`).
   context rather than hot-spot races).
 * Cost of the whole ladder when it does not help: nothing is lost, but a layer that does not settle adds tokens.
 
-Not yet measured: Claude. The probe on `claude -p` answered both questions correctly 5 of 5 on all four cases (a strong
-model does not need the re-apply form), and each call costs about 26,000 tokens of fixed overhead of the command line
-itself, which hides the difference; the runs against Claude hit the 5-hour usage limit and were discarded. To redo them
-use `--bare` or count output tokens only, and run from your own terminal:
+Claude (`claude -p`, run from the author's terminal, `serializable`, 5 runs per cell, redo budget 4, no `--bare`):
 
-```bash
-PYTHONPATH=workspace/src python3 workspace/eval/run_eval.py --suites counter,shared --strategies serializable \
-    --backends claude --reps 5 --max-redos 4 --reapply none --tag claude-redo --out workspace/eval/results/claude_ladder.jsonl
-PYTHONPATH=workspace/src python3 workspace/eval/run_eval.py --suites counter,shared --strategies serializable \
-    --backends claude --reps 5 --max-redos 4 --reapply claude --tag claude-layer2 --out workspace/eval/results/claude_ladder.jsonl
-python3 workspace/eval/report.py workspace/eval/results/claude_ladder.jsonl
-```
+| suite | setting | all correct | tasks satisfied | handed to a person per run | seconds | tokens |
+|---|---|---|---|---|---|---|
+| counter | redo the whole task | 1/5 | 21/25 | 0.8 | 50.2 | 1,201,563 |
+| counter | layer 2 (re-apply and compare) | 5/5 | 25/25 | 0.0 | 27.8 | 650,670 (-46%) |
+| shared | redo the whole task | 4/5 | 24/25 | 0.2 | 59.1 | 1,648,874 |
+| shared | layer 2 (re-apply and compare) | 4/5 | 24/25 | 0.2 | 43.3 | 1,111,603 (-33%) |
+
+No lost updates and main never broken in either setting. On `counter`, four tasks race for one counter and whole-task
+redo often used up its budget and handed a task to a person; layer 2 settled the races with one short question. On
+`shared` the correctness is the same, and the one unfinished task (`conflicts=0`) is an agent that did not finish, in both
+settings. Reading the numbers:
+
+* Five runs per cell: "1/5 against 5/5" on `counter` is a clear difference, "4/5 against 4/5" on `shared` says nothing
+  about correctness, only about cost.
+* Tokens include about 26,000 of fixed overhead per `claude -p` call, so part of the saving is the calls that were not
+  made (a whole-task redo costs a call and its overhead). That is real cost, but the totals must not be compared with the
+  `eco` and `quality` figures; compare only the two settings with each other.
+* A strong model answers the re-apply question correctly (the probe: 5 of 5 on all four cases), so there is no wrong
+  agreement to guard against here; the benefit is cost and fewer hand-offs. This matches the direction seen with `eco`
+  and `quality`.
+
+Rerun: `run_eval.py --suites counter,shared --strategies serializable --backends claude --reps 5 --max-redos 4 --reapply none|claude --tag claude-redo|claude-layer2 --out workspace/eval/results/claude_ladder.jsonl`, then `report.py` on the file.
 
 ## Correct at 32 agents, and how much faster and cheaper (stress harness)
 

@@ -29,7 +29,7 @@ is checked for lost work without spending a model token.
   statistics (`ladder_report`), `orchestrate --reapply --layers`. Off unless configured. A race in which main moved
   again while the model answered, found by the tests, is closed. `CliWorker` and the new `CliModel` read token use from
   `claude -p --output-format json`. With `eco` and `quality`, layer 2 cut total tokens by 55 to 65% on the racing
-  suites; layer 3 did not pay off and stays off by default. `OpenAICompatModel(extra=...)` passes extra request fields
+  suites; layer 3 did not pay off and stays off by default. With `claude -p` (5 runs per cell), layer 2 cut tokens by 46% on `counter` (and took it from 1/5 to 5/5 all-correct runs) and by 33% on `shared`. `OpenAICompatModel(extra=...)` passes extra request fields
   (layer 2 asks with `reasoning_effort: none`).
 
 * **Many agents**: `BatchQueue` lands branches that finish together with one validation (15x at 32 agents in the simulation,

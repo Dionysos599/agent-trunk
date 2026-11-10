@@ -1,26 +1,94 @@
-# AgentTrunk: A Consistent Multiagent Work System
+<h1 align="center">AgentTrunk</h1>
 
-Let several AI agents work on the same code base at the same time without stepping on each other.
+<p align="center"><b>Let several AI agents work on the same project at the same time, without overwriting each other.</b></p>
 
-Each agent gets its own private copy of the project (a *fork*, which costs one reference, not a copy of
-the files). When it is done, its work is merged back through a single, strongly consistent commit point:
-changes that merge cleanly and pass your checks land, everything else is retried, resolved or handed to a
-person. Nothing an agent does can corrupt the shared state, and a crashed agent or orchestrator can be
-resumed.
+<p align="center">
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Java 17+" src="https://img.shields.io/badge/java-17%2B-ED8B00?logo=openjdk&logoColor=white">
+  <img alt="MCP server" src="https://img.shields.io/badge/MCP-server-6E56CF">
+  <img alt="Works with Claude Code, Cursor and any MCP client" src="https://img.shields.io/badge/works%20with-Claude%20Code%20%C2%B7%20Cursor%20%C2%B7%20Ollama-2EA44F">
+  <img alt="No third-party Python packages" src="https://img.shields.io/badge/python%20dependencies-none-lightgrey">
+  <img alt="1,000+ tests" src="https://img.shields.io/badge/tests-1%2C000%2B-brightgreen">
+</p>
 
-Underneath is a replicated, sharded key/value store that survives the loss of replicas. On top of it sits a
-versioned workspace (content-addressed files, compare-and-set references, three-way merge) and an
-orchestrator that plans a goal into tasks, runs agents in parallel, and lands their results.
+<p align="center">
+  <a href="#about">About</a> ·
+  <a href="#user-guide">User guide</a> ·
+  <a href="#developer-guide">Developer guide</a> ·
+  <a href="docs/eval/results.md">Results</a> ·
+  <a href="docs/design/README.md">Design docs</a>
+</p>
+
+---
+
+# About
+
+When you run two or more AI agents on one project (two Claude Code windows, Cursor plus a local model, a team of
+agents started by a planner), they step on each other. One overwrites the other's file. Both read the same number,
+both add one, and one of the additions disappears. A merge "succeeds" and leaves code that no longer runs.
+
+**AgentTrunk is a shared workspace that stops this from happening.** Every agent gets its own private copy of the
+project. When an agent says it is finished, its work goes through one checkpoint: the system merges it with what
+other agents already finished, runs your checks, and only then adds it to the shared project (`main`). Work that
+cannot be added safely is sent back to the agent, repaired, or handed to you with an explanation. Nothing an agent
+does can corrupt the shared project, and a crashed agent can pick up where it stopped.
+
+It plugs into the tools you already use through the [Model Context Protocol](https://modelcontextprotocol.io)
+(MCP), or you can run a goal through its own command line. No paid service is required.
 
 ```
-goal ──► planner ──► tasks ──► scheduler ──► agents (each on its own fork)
-                                                 │
-                              validating merge queue ──► main
-                                                 │
-                    replicated key/value store (survives replica failures)
+agent A ─┐                                       ┌─ your checks (tests, "did it do the job?") ─┐
+agent B ─┼─►  own private copy ─► finished ─►  merge queue ─────────────────────────────────►  main
+agent C ─┘                                       └─ conflict? stale? repair, retry, or ask you ─┘
+                               │
+              replicated store underneath (keeps working when a machine dies)
 ```
 
-You can use it in four ways:
+## Why you might want it
+
+**1. Agents from different tools share one project without overwriting each other.**
+Claude Code, Cursor, a local model: each one works on its own copy and submits when done. The system notices the
+sneaky case, too. Say two agents both read `COUNT = 5` and each changes it to `6`. A plain merge sees two edits that
+do not touch the same line and accepts both, and the project ends at `6` instead of `7`. AgentTrunk remembers what each
+agent *looked at*, sees that the number changed after the agent read it, and sends that agent back to redo the step
+on the new value. This is called a *stale read*, and ordinary merging does not catch it.
+
+**2. "Done" means done, checked by a program instead of by asking the model again.**
+Instead of trusting an agent that says "finished", you write what must be true when the task is complete, for example
+"the test passes", "this file now contains the new route", "the version number went up by exactly one". The system checks
+that itself when the work is submitted. These checks use no model tokens, so long tasks do not pay for repeated
+"are you done yet?" prompts, and an agent that quietly did nothing is caught.
+
+**3. Cheaper than starting over.**
+When two agents collide, the expensive answer is "throw it away and redo the task". AgentTrunk first asks one short
+question ("given the new state of this file, what would your change look like now?") and compares the answer by
+program. In our measurements this cut the tokens spent on collisions by about a third to two thirds, depending on the
+model (details in [the results](docs/eval/results.md)).
+
+**4. Built to survive crashes, like a real distributed system.**
+The workspace sits on a replicated key/value store that keeps running when a machine fails. An agent that is killed
+midway resumes from its last checkpoint. A task whose owner died is taken over by someone else, and the dead owner can no
+longer land stale work. A task that was already finished is never done twice.
+
+**5. Bring any model.**
+Local models through Ollama or any OpenAI-compatible endpoint, command-line agents such as `claude`, or whatever
+MCP client you already use (it brings its own model). The project itself needs no paid API.
+
+**6. You stay in control.**
+A task board shows what is open, running, finished or waiting. You choose the rules per file: *append-only* files
+(a changelog, a registry) where everyone's added lines are all kept, or strict files where any overlap needs a
+decision. You choose the checks, the validation command, how many agents run in parallel, and how long a silent agent
+keeps its task.
+
+## Does it work? (short version)
+
+| What we tested | Result |
+|---|---|
+| 32 agents, 160 tasks, about 1,600 line edits per run, 20 runs, with and without killed agents and killed storage replicas | **20/20 runs correct** with no edit lost and none applied twice, with and without faults. A shared folder and a git-style merge: 0/20 |
+| Speed and cost of the same workload | 17.6x faster than one agent for 3.3% more tokens, with task times and costs replayed from recorded local-model runs |
+| Cost of resolving collisions with the cheaper-than-redo step | about 33 to 65% fewer tokens on local models and on `claude -p` |
+
+## Is this for you?
 
 | You want to | Use |
 |---|---|
@@ -29,13 +97,19 @@ You can use it in four ways:
 | a git-like workspace for agents (fork, edit, merge, stale-read detection), embedded in your own program | the Python library `cmws_ws` |
 | a linearizable, fault-tolerant key/value store with compare-and-set | the HTTP gateway |
 
+**Not (yet) for you if** you need to coordinate binary files or large refactors across many files at once: merging and
+checks are line-based text. The default setup runs on one machine, and there is no sign-in or multi-user separation.
+
+---
+
+# User guide
+
 ## Requirements
 
 * Java 17 or newer and `make` (the store and gateway)
 * Python 3.10 or newer, standard library only (the workspace, the agents and the command line)
-* For real agents: any OpenAI-compatible chat endpoint with tool calling (for example a local
-  [Ollama](https://ollama.com)), or a command-line agent such as `claude`. No paid service is required by
-  the project itself.
+* For agents that AgentTrunk runs itself: any OpenAI-compatible chat endpoint with tool calling (for example a local
+  [Ollama](https://ollama.com)), or a command-line agent such as `claude`. MCP clients bring their own model.
 
 ## Quick start
 
@@ -61,22 +135,9 @@ agenttrunk init --from ./my-project
 agenttrunk log
 ```
 
-Give a goal to agents (here a local Ollama model; the merged result must pass your test command before
-`main` moves):
+Add `--data-dir /some/dir` to the gateway arguments if you want a restarted store to keep its data.
 
-```bash
-agenttrunk orchestrate run1 \
-    --goal "Add a div(a, b) function to mathx.py that raises ValueError on zero, with tests" \
-    --model qwen2.5-coder:7b --parallel 3 --escalate \
-    --validate-cmd "python3 -m unittest discover"
-agenttrunk run-status run1
-```
-
-The model splits the goal into tasks, the tasks run in parallel on their own forks, and each finished
-branch is merged into `main` only if the merged tree passes `--validate-cmd`. Run the same command again
-with the same run id after a crash and it resumes instead of starting over.
-
-## Using it from Claude Code, Cursor and other MCP clients
+## Use it from Claude Code, Cursor and other MCP clients
 
 `agenttrunk mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Every client
 session that connects is one agent: it takes a task from a shared board, gets its own private branch of the
@@ -139,70 +200,24 @@ A main agent that splits a goal and collects results can run its own `agenttrunk
 to 10 minutes), `board_digest` (what landed, what failed in one line each, what needs a decision with the conflicting files) and
 `explain_escalation` (the full record of one item).
 
-## Using the workspace from Python
+## Give a goal to local or API models
 
-```python
-from cmws_ws.kv import HttpKV                 # or MemoryKV() for an in-process store
-from cmws_ws.repo import Repository
+Here a local Ollama model plans and does the work (the merged result must pass your test command before `main` moves):
 
-repo = Repository.init(HttpKV("http://127.0.0.1:8080"), {"app.py": b"print('hi')\n"})
-
-alice, bob = repo.fork("alice"), repo.fork("bob")     # private snapshots of main
-alice.write("app.py", "print('hello')\n")
-alice.commit("friendlier greeting")
-bob.write("README.md", "# demo\n")
-bob.commit("add readme")
-
-print(repo.submit(alice).status)    # fast-forward
-print(repo.submit(bob).status)      # merged  (bob's work is merged onto alice's)
+```bash
+agenttrunk orchestrate run1 \
+    --goal "Add a div(a, b) function to mathx.py that raises ValueError on zero, with tests" \
+    --model qwen2.5-coder:7b --parallel 3 --escalate \
+    --validate-cmd "python3 -m unittest discover"
+agenttrunk run-status run1
 ```
 
-`submit` merges the branch with whatever landed in the meantime and moves `main` with a compare-and-set, so
-concurrent submissions form one history. It reports instead of guessing when it cannot land:
+The model splits the goal into tasks, the tasks run in parallel on their own forks, and each finished
+branch is merged into `main` only if the merged tree passes `--validate-cmd`. Run the same command again
+with the same run id after a crash and it resumes instead of starting over. To use a command-line agent for every
+task instead of a chat model, pass `--exec claude -p ...` (see [Running agents](#running-agents)).
 
-| status | meaning |
-|---|---|
-| `fast-forward`, `merged` | landed |
-| `noop` | nothing to land, or it is already in `main` |
-| `conflict` | the same lines were changed differently; the result lists the conflicting paths |
-| `stale` | a file the agent read has changed since, even if the agent's edits do not overlap |
-| `rejected` | your `validate` function refused the merged result |
-
-Stale-read detection matters for agents that read a value and write one derived from it (a counter, a
-version number): a plain textual merge would silently lose one of two concurrent increments.
-
-## Running agents
-
-An agent is anything that implements `run(task, repo, agent_id)`; two are included.
-
-* **`LoopWorker`**: a tool-calling loop over any OpenAI-compatible endpoint, with file tools (list, read,
-  write, replace, delete, move) and a `finish` call. With `checkpoint_every=n` it commits and records its
-  conversation every `n` tool calls and resumes from the last record after a crash.
-* **`CliWorker`**: checks the branch out into a folder, runs a command-line agent there and pushes the
-  result, e.g. `CliWorker(["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits"])`.
-
-```python
-from cmws_ws.agents import (LoopWorker, MergeQueue, CommandValidator, OpenAICompatModel,
-                            Orchestrator, Task, TaskGraph, merger_worker)
-
-model = OpenAICompatModel("qwen2.5-coder:7b", "http://127.0.0.1:11434/v1")
-worker = LoopWorker(model, checkpoint_every=3)
-queue = MergeQueue(repo,
-                   validator=CommandValidator(["python3", "-m", "unittest", "discover"]),
-                   merger=merger_worker(model),        # tries to resolve conflicts
-                   redo_worker=worker,                 # then redoes the task on the new main
-                   max_redos=3)                        # then a person (see `cli escalations`)
-tasks = TaskGraph([Task("api", "Add a /health endpoint", ("server.py",)),
-                   Task("docs", "Document the endpoint", ("README.md",), depends_on=("api",))])
-summary = Orchestrator(repo, worker, queue=queue, parallel=4).run("run1", graph=tasks)
-print(summary.landed, summary.failed, summary.skipped)
-```
-
-A task lists the files it expects to touch. Tasks with disjoint files run at the same time; tasks that
-overlap run one after another, each starting from a `main` that already contains the earlier work. If a
-task touches more than it declared, it is noted, and the merge machinery still protects `main`.
-
-### What happens to a branch that cannot land
+## What happens to a branch that cannot land
 
 1. automatic three-way merge (line-level merge for text, rename-aware for files);
 2. a merger agent that sees both sides' intent and the conflict markers;
@@ -213,7 +228,7 @@ At every step the merged result must pass your validator, and a resolution that 
 side, a branch that changed nothing although the agent said "done", and files an agent changed without
 reading are all treated as failures to retry, not as success.
 
-### Telling the system what your edits mean
+## Tell the system what your edits mean
 
 Plain text cannot say whether two edits to a file are independent, so by default the system is careful: a file an
 agent read and that someone else changed since is *stale* and the landing waits. Two optional declarations let you say
@@ -256,6 +271,184 @@ not show that the task did its work).
 Independently of any declaration, a landing is also refused when lines that either side *added or removed on purpose*
 did not survive the merge (for example a merger agent that keeps one side).
 
+## Work in a local folder
+
+Any editor or tool can work on a branch through a plain folder:
+
+```bash
+agenttrunk clone alice ./alice-work
+cd alice-work                   # edit files with anything
+agenttrunk status               # also: pull, push -m "message", submit, resolve <path>, watch
+```
+
+`watch` keeps the folder and the branch in sync in the background. Conflicts appear as markers in the files
+and block pushing until you resolve them; edits made while offline are merged when the store is reachable
+again.
+
+## Command reference
+
+`agenttrunk [--url URL] [--main REF] COMMAND`, with the URL defaulting to `$AGENTTRUNK_URL`, then
+`http://127.0.0.1:8080`. Without installing: `bin/agenttrunk`, or `PYTHONPATH=workspace/src python3 -m agenttrunk`.
+(The old `CMWS_*` environment variables and `python3 -m cmws_ws.cli` still work; the Python package is
+`cmws_ws`.)
+
+| command | what it does |
+|---|---|
+| `init [--from DIR]` | create the repository, optionally from a folder |
+| `log [--limit N]` | history of `main` |
+| `clone AGENT DIR`, `status`, `pull`, `push`, `submit`, `resolve`, `watch` | work on a branch in a folder |
+| `run-task AGENT "description" --model M \| --exec CMD…` | run one agent on a task in its own branch (`--submit` to land it) |
+| `orchestrate RUN_ID --goal G \| --tasks FILE.json` | plan, run in parallel, validate and land; resumable |
+| `run-status RUN_ID` | the plan, each task's state and the result of a run |
+| `board NAME [--tasks FILE]` | create a board of tasks for agents to claim, or show it |
+| `mcp [--board B --agent A ...]` | serve the workspace to MCP clients (see above) |
+| `export DIR` | write the files of `main` to a folder |
+| `escalations` | work the merge queue could not land and left for a person |
+
+`orchestrate` options: `--model` and `--llm-url` (default `http://127.0.0.1:11434/v1`, or `$AGENTTRUNK_LLM_URL`),
+`--exec CMD…` to use a command-line agent for every task, `--validate-cmd`, `--parallel`, `--escalate`
+(let the model resolve conflicts and redo tasks), `--checkpoint-every`, `--claim-ttl`, `--owner`, `--reapply model|claude`
+and `--layers` (the cheaper-than-redo step, see Part 3), and `--llm-host` for a reverse proxy in front of Ollama that needs
+a `Host` header such as `localhost:11434`. `--tasks` takes a JSON list of `{"id", "description", "paths", "depends_on"}`.
+
+Task ids are letters, digits, `_` and `-`; run ids are letters, digits and `_` (at most 32). Inside a run a
+task is named `RUN-TASK`, so two runs can use the same task names.
+
+## Troubleshooting
+
+| you see | what it means |
+|---|---|
+| `stale` on submit | a file you read was changed by someone else after you read it; run `sync_with_main`, look at what changed, redo the dependent edit |
+| `rejected` with a reason | your validation command or an acceptance check failed on the merged result |
+| conflict markers in a file | two agents changed the same lines differently; resolve them (or let the merger agent), then submit again |
+| a task shows as claimed by a silent agent | its claim expires after `--claim-ttl`; then another agent can take it |
+| `agenttrunk escalations` lists items | the system tried every automatic step and left the decision to you; each item says why |
+
+---
+
+# Developer guide
+
+## How it is built
+
+```
+workspace/src/cmws_ws        Python: versioned workspace, merge, checks, agents, merge queue, MCP server, CLI
+        │ HTTP (compare-and-set)
+modules/gateway              HTTP front end and in-process cluster
+        │
+modules/sharded-kv           sharded store with live reconfiguration
+modules/paxos                multi-Paxos replicated state machine
+modules/primary-backup       primary-backup replication with a view service
+modules/rpc-kvstore          at-most-once layer and the key/value state machine
+```
+
+Protocol logic never performs I/O: a core returns effects (`Send`, `SetTimer`, `Persist`, …) and a thin node
+adapter carries them out, which is what makes the replication code testable.
+
+The workspace stores content-addressed files and commits in the store and moves branch references with compare-and-set,
+so concurrent landings form one history. The design documents in [docs/design](docs/design/README.md) explain each layer:
+exactly-once RPC, primary-backup, Paxos, the sharded store, the workspace engine, local sync, workers, scheduling and leases,
+the merge queue, reliability and the orchestrator, the MCP server, update consistency and efficiency, and the scale and
+cost target.
+
+## Layout
+
+```
+modules/rpc-kvstore       at-most-once layer and the key/value state machine
+modules/primary-backup    primary-backup replication with a view service
+modules/paxos             multi-Paxos replicated state machine
+modules/sharded-kv        sharded store with live reconfiguration
+modules/gateway           HTTP front end and in-process cluster
+workspace/src/cmws_ws     versioned workspace, merge, sync, leases, claims, agents, MCP server, CLI
+bin/agenttrunk            the command, runnable from a checkout without installing
+workspace/eval            evaluation harness, stress harness and recorded results
+workspace/tests           tests, including runs against the real gateway with replicas killed
+examples/mcp-demo         a ten-task MCP demo with scripted agents and a checker
+docs/design               design documents
+docs/eval                 evaluation report and figures
+jars/                     third-party and test-harness binaries
+```
+
+## Build and test
+
+```bash
+make                              # compile everything
+make test-workspace               # workspace, agents, MCP, evaluation and cluster integration tests
+python3 run-tests.py -l 5         # the store's own tests (unit, integration, gateway, durability)
+python3 run-tests.py -l 4 -p 2    # sharded store suite (also -l 1 .. -l 3)
+```
+
+Cross-group multi-key transactions are out of scope; the suite under `ShardStorePart2Test` is not expected
+to pass.
+
+## Using the workspace from Python
+
+```python
+from cmws_ws.kv import HttpKV                 # or MemoryKV() for an in-process store
+from cmws_ws.repo import Repository
+
+repo = Repository.init(HttpKV("http://127.0.0.1:8080"), {"app.py": b"print('hi')\n"})
+
+alice, bob = repo.fork("alice"), repo.fork("bob")     # private snapshots of main
+alice.write("app.py", "print('hello')\n")
+alice.commit("friendlier greeting")
+bob.write("README.md", "# demo\n")
+bob.commit("add readme")
+
+print(repo.submit(alice).status)    # fast-forward
+print(repo.submit(bob).status)      # merged  (bob's work is merged onto alice's)
+```
+
+`submit` merges the branch with whatever landed in the meantime and moves `main` with a compare-and-set, so
+concurrent submissions form one history. It reports instead of guessing when it cannot land:
+
+| status | meaning |
+|---|---|
+| `fast-forward`, `merged` | landed |
+| `noop` | nothing to land, or it is already in `main` |
+| `conflict` | the same lines were changed differently; the result lists the conflicting paths |
+| `stale` | a file the agent read has changed since, even if the agent's edits do not overlap |
+| `rejected` | your `validate` function refused the merged result |
+
+Stale-read detection matters for agents that read a value and write one derived from it (a counter, a
+version number): a plain textual merge would silently lose one of two concurrent increments.
+
+Isolation levels, from weakest to strongest: a shared folder; `gitlike` (text merge and validation, no read set);
+`snapshot` (stale reads are refused); `serializable` (also checks that lines added or removed on purpose survive, and
+the task's acceptance checks). The checker in `cmws_ws/serial.py` replays landed tasks in landing order and compares
+the result with `main`.
+
+## Running agents
+
+An agent is anything that implements `run(task, repo, agent_id)`; two are included.
+
+* **`LoopWorker`**: a tool-calling loop over any OpenAI-compatible endpoint, with file tools (list, read,
+  write, replace, delete, move) and a `finish` call. With `checkpoint_every=n` it commits and records its
+  conversation every `n` tool calls and resumes from the last record after a crash.
+* **`CliWorker`**: checks the branch out into a folder, runs a command-line agent there and pushes the
+  result, e.g. `CliWorker(["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits"])`. It reads token use from
+  `claude -p --output-format json`.
+
+```python
+from cmws_ws.agents import (LoopWorker, MergeQueue, CommandValidator, OpenAICompatModel,
+                            Orchestrator, Task, TaskGraph, merger_worker)
+
+model = OpenAICompatModel("qwen2.5-coder:7b", "http://127.0.0.1:11434/v1")
+worker = LoopWorker(model, checkpoint_every=3)
+queue = MergeQueue(repo,
+                   validator=CommandValidator(["python3", "-m", "unittest", "discover"]),
+                   merger=merger_worker(model),        # tries to resolve conflicts
+                   redo_worker=worker,                 # then redoes the task on the new main
+                   max_redos=3)                        # then a person (see `cli escalations`)
+tasks = TaskGraph([Task("api", "Add a /health endpoint", ("server.py",)),
+                   Task("docs", "Document the endpoint", ("README.md",), depends_on=("api",))])
+summary = Orchestrator(repo, worker, queue=queue, parallel=4).run("run1", graph=tasks)
+print(summary.landed, summary.failed, summary.skipped)
+```
+
+A task lists the files it expects to touch. Tasks with disjoint files run at the same time; tasks that
+overlap run one after another, each starting from a `main` that already contains the earlier work. If a
+task touches more than it declared, it is noted, and the merge machinery still protects `main`.
+
 ### Cheaper than a redo (optional)
 
 When a branch is stale because main changed a file the agent also changed, redoing the whole task is the expensive way
@@ -283,23 +476,10 @@ off by default.
 
 * Tool calls carry sequence numbers and run once; a retried call returns the recorded answer.
 * Tasks are claimed with an expiring claim; if an orchestrator dies, another one (or the same one,
-  restarted) takes its tasks over once the claim runs out, and the replaced owner can no longer land.
+  restarted) takes its tasks over once the claim runs out, and the replaced owner can no longer land. Before taking a task over,
+  the new owner looks for a commit of that task on `main`, so work that landed just before the crash is not done again.
 * Re-running `orchestrate` with the same run id skips finished tasks and continues the rest.
   `--claim-ttl` sets how long a dead orchestrator's tasks stay claimed (default 300 s).
-
-## Working in a local folder
-
-Any editor or tool can work on a branch through a plain folder:
-
-```bash
-agenttrunk clone alice ./alice-work
-cd alice-work                   # edit files with anything
-agenttrunk status               # also: pull, push -m "message", submit, resolve <path>, watch
-```
-
-`watch` keeps the folder and the branch in sync in the background. Conflicts appear as markers in the files
-and block pushing until you resolve them; edits made while offline are merged when the store is reachable
-again.
 
 ## The key/value store
 
@@ -318,35 +498,6 @@ curl -X POST 'localhost:8080/admin/revive?node=server1-2'
 The conditional operations answer `{"success":true|false,"value":...}` where `value` is what the key holds
 afterwards. Add `--data-dir /some/dir` to the gateway arguments and a restarted cluster keeps its data.
 A majority of replicas in each group must be reachable for operations to complete.
-
-## Command reference
-
-`agenttrunk [--url URL] [--main REF] COMMAND`, with the URL defaulting to `$AGENTTRUNK_URL`, then
-`http://127.0.0.1:8080`. Without installing: `bin/agenttrunk`, or `PYTHONPATH=workspace/src python3 -m agenttrunk`.
-(The old `CMWS_*` environment variables and `python3 -m cmws_ws.cli` still work; the Python package is
-`cmws_ws`.)
-
-| command | what it does |
-|---|---|
-| `init [--from DIR]` | create the repository, optionally from a folder |
-| `log [--limit N]` | history of `main` |
-| `clone AGENT DIR`, `status`, `pull`, `push`, `submit`, `resolve`, `watch` | work on a branch in a folder |
-| `run-task AGENT "description" --model M \| --exec CMD…` | run one agent on a task in its own branch (`--submit` to land it) |
-| `orchestrate RUN_ID --goal G \| --tasks FILE.json` | plan, run in parallel, validate and land; resumable |
-| `run-status RUN_ID` | the plan, each task's state and the result of a run |
-| `board NAME [--tasks FILE]` | create a board of tasks for agents to claim, or show it |
-| `mcp [--board B --agent A ...]` | serve the workspace to MCP clients (see above) |
-| `export DIR` | write the files of `main` to a folder |
-| `escalations` | work the merge queue could not land and left for a person |
-
-`orchestrate` options: `--model` and `--llm-url` (default `http://127.0.0.1:11434/v1`, or `$AGENTTRUNK_LLM_URL`),
-`--exec CMD…` to use a command-line agent for every task, `--validate-cmd`, `--parallel`, `--escalate`
-(let the model resolve conflicts and redo tasks), `--checkpoint-every`, `--claim-ttl`, `--owner`, and
-`--llm-host` for a reverse proxy in front of Ollama that needs a `Host` header such as `localhost:11434`.
-`--tasks` takes a JSON list of `{"id", "description", "paths", "depends_on"}`.
-
-Task ids are letters, digits, `_` and `-`; run ids are letters, digits and `_` (at most 32). Inside a run a
-task is named `RUN-TASK`, so two runs can use the same task names.
 
 ## Evaluation
 
@@ -370,7 +521,7 @@ history only; no model, no cost):
 python3 workspace/eval/replay.py --repo /path/to/repo --limit 1000 --table
 ```
 
-## Stress test at 32 agents
+### Stress test at 32 agents
 
 `python -m stress cluster --runs 20 [--faults]` (run from `workspace/eval`) starts the replicated store, runs 160 generated tasks (1,600
 line edits) with 32 scripted agents in 4 processes, optionally kills replicas and an agent process meanwhile, and decides correctness by
@@ -378,38 +529,6 @@ program: serial replay of the landed tasks, every edit exactly once, every state
 were correct without faults and 20 of 20 with them, where a shared folder and a git-style merge were correct in 0 of 20. With task
 costs replayed from recorded `eco` runs the same workload ran 17.6x faster than one agent for 3.3% more tokens (agents assumed to scale;
 see `docs/eval/results.md` for what that does and does not show).
-
-## Build and test
-
-```bash
-make                              # compile everything
-make test-workspace               # workspace, agents, MCP, evaluation and cluster integration tests
-python3 run-tests.py -l 5         # the store's own tests (unit, integration, gateway, durability)
-python3 run-tests.py -l 4 -p 2    # sharded store suite (also -l 1 .. -l 3)
-```
-
-Cross-group multi-key transactions are out of scope; the suite under `ShardStorePart2Test` is not expected
-to pass.
-
-## Layout
-
-```
-modules/rpc-kvstore       at-most-once layer and the key/value state machine
-modules/primary-backup    primary-backup replication with a view service
-modules/paxos             multi-Paxos replicated state machine
-modules/sharded-kv        sharded store with live reconfiguration
-modules/gateway           HTTP front end and in-process cluster
-workspace/src/cmws_ws     versioned workspace, merge, sync, leases, claims, agents, MCP server, CLI
-bin/agenttrunk            the command, runnable from a checkout without installing
-workspace/eval            evaluation harness and recorded results
-workspace/tests           tests, including runs against the real gateway with replicas killed
-docs/design               design documents
-docs/eval                 evaluation report
-jars/                     third-party and test-harness binaries
-```
-
-Protocol logic never performs I/O: a core returns effects (`Send`, `SetTimer`, `Persist`, …) and a thin node
-adapter carries them out, which is what makes the replication code testable.
 
 ## Origin
 

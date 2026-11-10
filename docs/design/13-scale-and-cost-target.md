@@ -121,7 +121,7 @@ of 32 real local models.
 
 | # | Work | Done when |
 |---|---|---|
-| U4 (done, Claude pending) | the ladder: re-apply and compare, continue the conversation, per-task layers, per-layer statistics, `claude -p` as a model | tokens per resolution by layer measured on `eco` and `quality` (`docs/eval/results.md`: layer 2 cut tokens 55 to 65%, layer 3 did not pay off); Claude to be measured |
+| U4 (done) | the ladder: re-apply and compare, continue the conversation, per-task layers, per-layer statistics, `claude -p` as a model | tokens per resolution by layer measured on `eco` and `quality` (`docs/eval/results.md`: layer 2 cut tokens 55 to 65%, layer 3 did not pay off); Claude (5 runs per cell): layer 2 cut tokens 46% on `counter`, 33% on `shared` |
 | U5 (done, no speculation) | batched validation, width cap, hedging | the speed curve over 1 to 32 agents, with the validation floor visible: plain queue 3.6x, batched 15.3x at 32 agents (`docs/eval/results.md`) |
 | S1 (done for `eco`, `quality`) | trace recorder: per-kind task time and tokens, per-layer collision cost, from real runs | `eval/stress/trace.py` summarises the recorded rows into `results/traces.json` (12 `eco` and 3 `quality` task samples; Claude not yet) |
 | S2 (done) | stress harness: workload generator, 32 agent processes against the real cluster, fault injection (agents, replicas, queue), the checks of section 2, results as rows | 20 + 20 runs produce the table; a deliberately broken variant (lossy merge, no read set) fails its checks |
